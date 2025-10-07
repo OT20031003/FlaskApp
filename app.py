@@ -80,11 +80,15 @@ def index(ticker):
         'ticker': ticker.upper(), 'current_price': round(current_price, 2)
     }
 
+    predicted_price_rounded = round(predicted_price, 2) if predicted_price is not None else "N/A"
+
     return render_template('index.html', 
                            chart_data_py=chart_data,               # HTML用 (Python辞書)
                            chart_data_json=json.dumps(chart_data), # JavaScript用 (JSON文字列)
                            portfolio=portfolio, 
-                           holdings=holdings_with_value)
+                           holdings=holdings_with_value,
+                           predicted_price=predicted_price_rounded) # 予測価格を追加
+
 @app.route('/portfolio')
 def portfolio_page():
     """資産推移グラフを表示するページ"""

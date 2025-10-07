@@ -37,6 +37,7 @@
             <div class="card-body">
                 <h5 class="card-title">取引: {{ chart_data_py.ticker }}</h5>
                 <p class="card-text">現在価格: ${{ chart_data_py.current_price }}</p>
+                <p class="card-text">翌日予測: <span class="badge bg-info">${{ predicted_price }}</span></p>
                 <form action="{{ url_for('buy', ticker=chart_data_py.ticker) }}" method="post" class="mb-2">
                     <div class="input-group">
                         <input type="number" name="shares" class="form-control" min="1" required placeholder="数量">
