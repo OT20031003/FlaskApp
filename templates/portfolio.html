@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}ポートフォリオ推移{% endblock %}
+
+{% block content %}
+<h2>資産推移グラフ</h2>
+
+{% if chart_data %}
+    <div class="chart-container mt-4">
+        <canvas id="portfolioChart"></canvas>
+    </div>
+{% else %}
+    <div class="alert alert-info mt-4">
+        まだ取引履歴がありません。取引を行うと、ここに資産の推移が表示されます。
+    </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if chart_data %}
+<script>
+    const portfolioData = JSON.parse('{{ chart_data | safe }}');
+    const ctx = document.getElementById('portfolioChart').getContext('2d');
+    const myChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: portfolioData.labels,
+            datasets: [{
+                label: '総資産額',
+                data: portfolioData.data,
+                borderColor: 'rgba(54, 162, 235, 1)',
+                backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                borderWidth: 2,
+                fill: true,
+                tension: 0.1
+            }]
+        },
+        options: {
+            scales: {
+                y: { beginAtZero: false }
+            },
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            return `総資産: $${context.formattedValue}`;
+                        }
+                    }
+                }
+            }
+        }
+    });
+</script>
+{% endif %}
+{% endblock %}
