@@ -8,6 +8,8 @@ import sqlite3
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from datetime import datetime, timedelta
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import StandardScaler
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your_secret_key_should_be_more_complex' # 実際にはもっと複雑なキーにしてください
@@ -200,18 +202,104 @@ def sell(ticker):
     conn.close()
     return redirect(url_for('index', ticker=ticker))
 
-def predict_tomorrow_price(df):
-    """線形回帰モデルで翌日の株価を予測する"""
-    df_pred = df.copy()
-    df_pred['days'] = (df_pred.index - df_pred.index[0]).days
-    X = df_pred[['days']]
-    y = df_pred['Close']
-    model = LinearRegression()
-    model.fit(X, y)
-    last_day = df_pred['days'].iloc[-1]
-    tomorrow = np.array([[last_day + 1]])
-    prediction = model.predict(tomorrow)
-    return prediction[0]
+def predict_tomorrow_price(df, n_lags=5, use_days=180):
+    """
+    過去データからラグ特徴・移動平均・ボラティリティ・曜日特徴を作り
+    Ridge回帰で翌日終値を予測する。
+    df: yfinanceで取得した履歴データ（indexがDatetimeIndex, 列に 'Close' を含む）
+    n_lags: 使用するラグの数（例: 5 -> 1日〜5日の終値を特徴に）
+    use_days: 学習に使う直近の日数（len(df) が小さい時は調整）
+    """
+    try:
+        df_local = df.copy().sort_index()
+        if df_local.empty or 'Close' not in df_local.columns or len(df_local) < 5:
+            # データ不足なら既存の簡単な手法でフォールバック
+            return df_local['Close'].iloc[-1] if not df_local.empty else None
+
+        # 特徴量作成
+        data = pd.DataFrame({'Close': df_local['Close']})
+        # ラグ特徴
+        for lag in range(1, n_lags + 1):
+            data[f'lag_{lag}'] = data['Close'].shift(lag)
+        # リターンと移動平均・ボラ
+        for w in (5, 10, 20):
+            data[f'ma_{w}'] = data['Close'].rolling(window=w, min_periods=1).mean()
+            data[f'std_{w}'] = data['Close'].rolling(window=w, min_periods=1).std().fillna(0)
+        data['return_1'] = data['Close'].pct_change().fillna(0)
+        # 曜日（周期特徴 sin/cos）
+        dow = data.index.dayofweek
+        data['dow_sin'] = np.sin(2 * np.pi * dow / 7)
+        data['dow_cos'] = np.cos(2 * np.pi * dow / 7)
+
+        # 学習用に NaN を落とす
+        data = data.dropna()
+
+        # 学習データの期間を限定（直近 use_days 日）
+        if use_days is not None and len(data) > use_days:
+            data_train = data.iloc[-use_days:]
+        else:
+            data_train = data
+
+        # 特徴量/ターゲット分離
+        feature_cols = [c for c in data_train.columns if c != 'Close']
+        X = data_train[feature_cols].values
+        y = data_train['Close'].values
+
+        # 標準化 + Ridge 回帰
+        scaler = StandardScaler()
+        Xs = scaler.fit_transform(X)
+        model = Ridge(alpha=1.0)  # 正則化強さは必要に応じて調整
+        model.fit(Xs, y)
+
+        # --- 翌日の特徴量を作る ---
+        last = data.iloc[-1:].copy()  # 最終日行（shift済みのlagではないので注意）
+        # ラグ値は直前のClose等を使って作る
+        last_row = {}
+        last_close = df_local['Close'].iloc[-1]
+        # ラグ1は今日の終値、ラグ2は昨日の終値... とする
+        closes = df_local['Close'].tolist()
+        for lag in range(1, n_lags + 1):
+            if len(closes) >= lag:
+                last_row[f'lag_{lag}'] = closes[-lag]
+            else:
+                last_row[f'lag_{lag}'] = closes[-1]  # データ不足時フォールバック
+
+        for w in (5, 10, 20):
+            last_row[f'ma_{w}'] = df_local['Close'].rolling(window=w, min_periods=1).mean().iloc[-1]
+            last_row[f'std_{w}'] = df_local['Close'].rolling(window=w, min_periods=1).std().fillna(0).iloc[-1]
+        last_row['return_1'] = df_local['Close'].pct_change().fillna(0).iloc[-1]
+        next_day = df_local.index[-1] + pd.Timedelta(days=1)
+        dow_next = next_day.dayofweek
+        last_row['dow_sin'] = np.sin(2 * np.pi * dow_next / 7)
+        last_row['dow_cos'] = np.cos(2 * np.pi * dow_next / 7)
+
+        X_next = np.array([last_row[col] for col in feature_cols]).reshape(1, -1)
+        X_next_s = scaler.transform(X_next)
+        pred = model.predict(X_next_s)[0]
+
+        # 現実性チェック（価格は負にならないように）
+        if np.isnan(pred) or pred <= 0:
+            pred = last_close
+
+        return float(pred)
+    except Exception as e:
+        # 何か問題が起きたら既存の単純線形回帰風にフォールバック（安全策）
+        try:
+            df_pred = df.copy()
+            df_pred['days'] = (df_pred.index - df_pred.index[0]).days
+            X = df_pred[['days']]
+            y = df_pred['Close']
+            model = LinearRegression()
+            model.fit(X, y)
+            last_day = df_pred['days'].iloc[-1]
+            tomorrow = np.array([[last_day + 1]])
+            return float(model.predict(tomorrow)[0])
+        except Exception:
+            # それでもダメなら直近の終値を返す
+            if not df.empty:
+                return float(df['Close'].iloc[-1])
+            return None
+
 
 if __name__ == '__main__':
     app.run(debug=True)
