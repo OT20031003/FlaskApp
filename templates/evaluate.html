@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ ticker }} 予測モデル精度評価</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .metric-card { text-align: center; }
+        .metric-value { font-size: 2rem; font-weight: bold; }
+        .metric-label { font-size: 1rem; color: #6c757d; }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{{ url_for('index', ticker=ticker) }}">メインチャート</a></li>
+                <li class="breadcrumb-item active" aria-current="page">精度評価</li>
+            </ol>
+        </nav>
+
+        <h1 class="mb-4">{{ ticker }} 予測モデル精度評価</h1>
+
+        {% if results and not results.error %}
+            <h3 class="mb-3">評価サマリー（直近{{ results.details|length }}日間）</h3>
+            <div class="row g-4 mb-5">
+                <div class="col-md-4">
+                    <div class="card metric-card">
+                        <div class="card-body">
+                            <div class="metric-value text-primary">{{ results.mae }}</div>
+                            <div class="metric-label">MAE (平均絶対誤差)</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card metric-card">
+                        <div class="card-body">
+                            <div class="metric-value text-success">{{ results.rmse }}</div>
+                            <div class="metric-label">RMSE (二乗平均平方根誤差)</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card metric-card">
+                        <div class="card-body">
+                            <div class="metric-value text-warning">{{ results.mape }}%</div>
+                            <div class="metric-label">MAPE (平均絶対パーセント誤差)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <h3 class="mb-3">詳細結果</h3>
+            <div class="table-responsive">
+                <table class="table table-striped table-hover">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>日付</th>
+                            <th>予測価格</th>
+                            <th>実際の価格</th>
+                            <th>誤差 (実績 - 予測)</th>
+                            <th>誤差率 (%)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for detail in results.details %}
+                        <tr>
+                            <td>{{ detail.date }}</td>
+                            <td>{{ "%.2f"|format(detail.predicted) }}</td>
+                            <td>{{ "%.2f"|format(detail.actual) }}</td>
+                            <td class="{{ 'text-danger' if detail.error < 0 else 'text-success' }}">
+                                {{ "%.2f"|format(detail.error) }}
+                            </td>
+                            <td class="{{ 'text-danger' if detail.error < 0 else 'text-success' }}">
+                                {{ "%.2f"|format(detail.error_percent) }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+        {% elif results.error %}
+            <div class="alert alert-warning" role="alert">
+                <strong>評価エラー:</strong> {{ results.error }}
+            </div>
+        {% else %}
+             <div class="alert alert-info" role="alert">
+                評価データを読み込めませんでした。
+            </div>
+        {% endif %}
+
+        <div class="my-4">
+            <a href="{{ url_for('index', ticker=ticker) }}" class="btn btn-secondary">&laquo; メインページに戻る</a>
+        </div>
+    </div>
+</body>
+</html>
