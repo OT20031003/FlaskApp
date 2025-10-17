@@ -170,14 +170,17 @@ def predict_with_lstm(df, sequence_length=40, epochs=100, predict_len=10):
 
     return prediction_series
 
-def predict_with_ridge(df, n_lags=5, use_days=180):
+def predict_with_ridge(df, n_lags=5, use_days=180, predict_len=10):
     """
-    Predicts the next day's closing price using Ridge Regression with feature engineering.
+    Predicts the next N days' closing price using Ridge Regression with feature engineering.
     """
     try:
         df_local = df.copy().sort_index()
         if len(df_local) < n_lags + 1:
-            return float(df_local['Close'].iloc[-1]) if not df_local.empty else None
+            # Not enough data, return a simple series with the last price repeated
+            last_price = float(df_local['Close'].iloc[-1]) if not df_local.empty else 0
+            prediction_dates = pd.date_range(start=df_local.index[-1] + pd.Timedelta(days=1), periods=predict_len, freq='B')
+            return pd.Series([last_price] * predict_len, index=prediction_dates)
 
         # Feature Engineering
         data = pd.DataFrame(index=df_local.index)
@@ -204,38 +207,51 @@ def predict_with_ridge(df, n_lags=5, use_days=180):
         model = Ridge(alpha=1.0)
         model.fit(Xs, y)
 
-        # Prepare features for the next day's prediction
-        last_day_features = {}
-        closes = df_local['Close'].tolist()
-        for lag in range(1, n_lags + 1):
-            last_day_features[f'lag_{lag}'] = closes[-lag]
-        for w in (5, 10, 20):
-            last_day_features[f'ma_{w}'] = df_local['Close'].rolling(window=w).mean().iloc[-1]
-            last_day_features[f'std_{w}'] = df_local['Close'].rolling(window=w).std().iloc[-1]
-        next_day = df_local.index[-1] + pd.Timedelta(days=1)
-        dow_next = next_day.dayofweek
-        last_day_features['dow_sin'] = np.sin(2 * np.pi * dow_next / 7)
-        last_day_features['dow_cos'] = np.cos(2 * np.pi * dow_next / 7)
+        # Iterative Prediction
+        predictions = []
+        # Use a copy for manipulation
+        temp_df = df_local.copy()
 
-        X_next = np.array([last_day_features[col] for col in feature_cols]).reshape(1, -1)
-        X_next_s = scaler.transform(X_next)
+        for _ in range(predict_len):
+            # Prepare features for the next day's prediction
+            last_day_features = {}
+            closes = temp_df['Close'].tolist()
+            
+            for lag in range(1, n_lags + 1):
+                last_day_features[f'lag_{lag}'] = closes[-lag]
+            for w in (5, 10, 20):
+                last_day_features[f'ma_{w}'] = temp_df['Close'].rolling(window=w).mean().iloc[-1]
+                last_day_features[f'std_{w}'] = temp_df['Close'].rolling(window=w).std().iloc[-1]
+            
+            next_day = temp_df.index[-1] + pd.Timedelta(days=1)
+            dow_next = next_day.dayofweek
+            last_day_features['dow_sin'] = np.sin(2 * np.pi * dow_next / 7)
+            last_day_features['dow_cos'] = np.cos(2 * np.pi * dow_next / 7)
+
+            X_next = np.array([last_day_features[col] for col in feature_cols]).reshape(1, -1)
+            X_next_s = scaler.transform(X_next)
+            
+            pred = model.predict(X_next_s)[0]
+            pred = float(pred) if pred > 0 else float(temp_df['Close'].iloc[-1])
+            predictions.append(pred)
+
+            # Add the prediction to the temp_df to be used for the next iteration's features
+            # Create a new row as a DataFrame before concatenating
+            new_row = pd.DataFrame({'Close': [pred]}, index=[next_day])
+            temp_df = pd.concat([temp_df, new_row])
+
+
+        last_date = df_local.index[-1]
+        prediction_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=predict_len, freq='B')
         
-        pred = model.predict(X_next_s)[0]
-
-        return float(pred) if pred > 0 else float(df_local['Close'].iloc[-1])
+        return pd.Series(predictions, index=prediction_dates)
 
     except Exception as e:
         print(f"Ridge Prediction Error: {e}")
-        # Fallback to simple linear regression on failure
-        try:
-            df_pred = df.copy()
-            df_pred['days'] = (df_pred.index - df_pred.index[0]).days
-            model_lr = LinearRegression()
-            model_lr.fit(df_pred[['days']], df_pred['Close'])
-            tomorrow = np.array([[df_pred['days'].iloc[-1] + 1]])
-            return float(model_lr.predict(tomorrow)[0])
-        except Exception:
-            return float(df['Close'].iloc[-1]) if not df.empty else None
+        # Fallback to returning a simple series with the last price repeated
+        last_price = float(df['Close'].iloc[-1]) if not df.empty else 0
+        prediction_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=predict_len, freq='B')
+        return pd.Series([last_price] * predict_len, index=prediction_dates)
 
 # --- Flask Routes ---
 
@@ -282,19 +298,23 @@ def index(ticker):
     model_type = request.args.get('model', 'ridge').lower()
     print(f"model_type = {model_type}")
     if model_type == 'lstm':
-        predicted_price = predict_with_lstm(df)
+        prediction_series = predict_with_lstm(df)
     else:
         # Default to Ridge model
         model_type = 'ridge'
-        predicted_price = predict_with_ridge(df)
+        prediction_series = predict_with_lstm(df)
+    
+    predicted_price = prediction_series.iloc[0]
+    prediction_labels = prediction_series.index.strftime('%Y-%m-%d').tolist()
+    prediction_data = prediction_series.tolist()
 
     # Prepare data for Chart.js
     last_date = df.index[-1]
-    next_day_label = (last_date + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+    
     # The prediction line connects today's close with tomorrow's prediction
-    prediction_data_points = [None] * (len(df) - 1) + [df['Close'].iloc[-1], predicted_price]
-    labels = df.index.strftime('%Y-%m-%d').tolist() + [next_day_label]
-    data = df['Close'].tolist() + [None] # Historical data points
+    prediction_data_points = [None] * (len(df)-1) + [df['Close'].iloc[-1]] + prediction_data
+    labels = df.index.strftime('%Y-%m-%d').tolist() + prediction_labels
+    data = df['Close'].tolist() + [None] * len(prediction_data) # Historical data points
     
     chart_data = {
         'labels': labels, 'data': data, 'prediction_data': prediction_data_points,
@@ -461,4 +481,3 @@ if __name__ == '__main__':
     # Note: This app requires a 'portfolio.db' file created by 'init_db.py'
     # and templates like 'index.html' and 'portfolio.html' to be in a 'templates' folder.
     app.run(debug=True)
-
