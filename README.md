@@ -1,3 +1,8 @@
+仮想環境の作成
 ```
-source venv/bin/activate
+conda create -n stockapp python=3.9
+```
+必要なライブラリのインストール
+```
+pip install -r requirements.txt
 ```

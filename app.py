@@ -140,29 +140,18 @@ def predict_with_lstm(df, sequence_length=40, epochs=100, predict_len=10):
         # 最新株価を予測
         print("\nPredicting the next", predict_len, "days...")
         with torch.no_grad():
-            # 1. Get the last `past_len` days of data from the dataframe
             last_sequence_df = df.iloc[-past_len:][feature_cols]
-
-            # 2. Convert it to a numpy array and then to a PyTorch tensor
             last_sequence_np = last_sequence_df.values.astype(np.float32)
-            # Add a batch dimension (from shape [50, 6] to [1, 50, 6])
             input_tensor = torch.from_numpy(last_sequence_np).unsqueeze(0).to(device)
 
-            # 3. Make the prediction
-            # The output will be in the scaled format
             prediction_scaled = model(input_tensor)
 
-            # 4. Inverse transform the prediction to get the actual price
-            # Move tensor to CPU, convert to numpy, reshape for the scaler
             prediction_np = prediction_scaled.cpu().numpy().reshape(-1, 1)
             prediction_unscaled = scaler.inverse_transform(prediction_np)
 
-            # 5. Create dates for the prediction period
             last_date = df.index[-1]
-            # Use 'B' frequency for business days
             prediction_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=predict_len, freq='B')
 
-            # Create a pandas Series for the predictions for easy viewing
             prediction_series = pd.Series(prediction_unscaled.flatten(), index=prediction_dates, name="Predicted Close")
             print("\n--- Predicted Stock Prices ---")
             print(prediction_series)
