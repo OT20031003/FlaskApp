@@ -38,6 +38,19 @@
                 <h5 class="card-title">取引: {{ chart_data_py.ticker }}</h5>
                 <p class="card-text">現在価格: ${{ chart_data_py.current_price }}</p>
                 <p class="card-text">翌日予測: <span class="badge bg-info">${{ predicted_price }}</span></p>
+
+                <form method="GET" action="{{ url_for('index', ticker=chart_data_py.ticker) }}" class="row g-2 align-items-center mb-3">
+                    <div class="col-auto">
+                         <label for="predict_len">予測する日付:</label>
+                    </div>
+                    <div class="col-auto">
+                        <input type="number" id="predict_len" name="predict_len" class="form-control" value="{{ request.args.get('predict_len', 10) }}" min="1">
+                    </div>
+                    <div class="col-auto">
+                        <button type="submit" class="btn btn-primary btn-sm">予測</button>
+                    </div>
+                </form>
+                
                 <form action="{{ url_for('buy', ticker=chart_data_py.ticker) }}" method="post" class="mb-2">
                     <div class="input-group">
                         <input type="number" name="shares" class="form-control" min="1" required placeholder="数量">

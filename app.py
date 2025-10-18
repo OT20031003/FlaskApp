@@ -10,7 +10,6 @@ import numpy as np
 from datetime import datetime, timedelta
 from sklearn.linear_model import Ridge, LinearRegression
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-import datetime
 from torch.utils.data import TensorDataset, DataLoader
 # --- PyTorch LSTM Model Definition ---
 # The StockPredictor class you provided.
@@ -74,99 +73,106 @@ def get_stock_data(ticker):
 # --- Prediction Models ---
 
 def predict_with_lstm(df, sequence_length=40, epochs=100, predict_len=10):
-    df.reset_index()
-    scaler = MinMaxScaler(feature_range=(-1, 1))
-    train_len = int(len(df) * 0.7)
-    ds = scaler.fit_transform(df.iloc[0:train_len ]["Close"].values.reshape(-1, 1))
-    df["Close_s"] = scaler.transform(df["Close"].values.reshape(-1, 1))
-    df["Date"] = df.index
-    df["weekdays"] = df["Date"].dt.dayofweek
-    wd_dummies = pd.get_dummies(df["weekdays"], prefix="wd")
-    df = pd.concat([df, wd_dummies], axis=1)
-    feature_cols = ['Close_s',  'wd_0', 'wd_1', 'wd_2', 'wd_3', 'wd_4']
-    train_len = int(len(df) * 0.7)
-    x_seq = []
-    y_seq = []
-    past_len = 30
-    input_size = len(feature_cols)
-    batch_size = 32
-    for i in range(len(df) - past_len-predict_len):
-        x_window = df.iloc[i:i+past_len][feature_cols].values.astype(np.float32)
-        x_seq.append(x_window)
-        y_target = df["Close_s"].iloc[i + past_len:i + past_len + predict_len].values.astype(np.float32)
-        #y_target = df["Close_s"].iloc[i + past_len:i + past_len + predict_len
-        y_seq.append(y_target)
-    print(y_seq[0])
+    try:
+        df.reset_index()
+        scaler = MinMaxScaler(feature_range=(-1, 1))
+        train_len = int(len(df) * 0.7)
+        ds = scaler.fit_transform(df.iloc[0:train_len ]["Close"].values.reshape(-1, 1))
+        df["Close_s"] = scaler.transform(df["Close"].values.reshape(-1, 1))
+        df["Date"] = df.index
+        df["weekdays"] = df["Date"].dt.dayofweek
+        wd_dummies = pd.get_dummies(df["weekdays"], prefix="wd")
+        df = pd.concat([df, wd_dummies], axis=1)
+        feature_cols = ['Close_s',  'wd_0', 'wd_1', 'wd_2', 'wd_3', 'wd_4']
+        train_len = int(len(df) * 0.7)
+        x_seq = []
+        y_seq = []
+        past_len = 50
+        input_size = len(feature_cols)
+        batch_size = 32
+        for i in range(len(df) - past_len-predict_len):
+            x_window = df.iloc[i:i+past_len][feature_cols].values.astype(np.float32)
+            x_seq.append(x_window)
+            y_target = df["Close_s"].iloc[i + past_len:i + past_len + predict_len].values.astype(np.float32)
+            #y_target = df["Close_s"].iloc[i + past_len:i + past_len + predict_len
+            y_seq.append(y_target)
+        print(y_seq[0])
 
-    X = np.stack(x_seq)
-    Y = np.stack(y_seq)
-    print(X.shape, Y.shape)
-    X_train_np, X_test_np = X[:train_len], X[train_len:]
-    Y_train_np, Y_test_np = Y[:train_len], Y[train_len:]
-    print(X_train_np.shape, X_test_np.shape)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    X_train = torch.from_numpy(X_train_np).float().to(device)
-    Y_train = torch.from_numpy(Y_train_np).float().to(device)
-    X_test = torch.from_numpy(X_test_np).float().to(device)
-    Y_test = torch.from_numpy(Y_test_np).float().to(device)
-    train_dataloader = DataLoader(TensorDataset(X_train, Y_train), batch_size=batch_size, shuffle=True)
-    test_dataloader = DataLoader(TensorDataset(X_test, Y_test), batch_size=batch_size, shuffle=True)
+        X = np.stack(x_seq)
+        Y = np.stack(y_seq)
+        print(X.shape, Y.shape)
+        X_train_np, X_test_np = X[:train_len], X[train_len:]
+        Y_train_np, Y_test_np = Y[:train_len], Y[train_len:]
+        print(X_train_np.shape, X_test_np.shape)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        X_train = torch.from_numpy(X_train_np).float().to(device)
+        Y_train = torch.from_numpy(Y_train_np).float().to(device)
+        X_test = torch.from_numpy(X_test_np).float().to(device)
+        Y_test = torch.from_numpy(Y_test_np).float().to(device)
+        train_dataloader = DataLoader(TensorDataset(X_train, Y_train), batch_size=batch_size, shuffle=True)
+        test_dataloader = DataLoader(TensorDataset(X_test, Y_test), batch_size=batch_size, shuffle=True)
 
 
-    criterion = nn.MSELoss()
-    model = StockLongPredictor(input_size=input_size, hidden_size=128, output_size=predict_len).to(device)
-    optimizer =torch.optim.Adam(model.parameters(), lr=1e-4)
-    for epoch in range(epochs):
-        model.train()
-        total_loss = 0
-        for X_batch, Y_batch in train_dataloader:
-            optimizer.zero_grad()
-            outputs = model(X_batch)
-            loss = criterion(outputs, Y_batch)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        if (epoch+1) % 5 == 0 or epoch == 0:
-            print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {total_loss / len(train_dataloader):.6f}')
-    model.eval()
-    total_test_loss = 0
-    with torch.no_grad():
-        for X_batch, Y_batch in test_dataloader:
-            outputs = model(X_batch)
-            loss = criterion(outputs, Y_batch)
-            total_test_loss += loss.item()
-    avg_loss = total_test_loss / len(test_dataloader)
-    print(f'Average Test Loss: {avg_loss:.6f}')
-    # 最新株価を予測
-    print("\nPredicting the next", predict_len, "days...")
-    with torch.no_grad():
-        # 1. Get the last `past_len` days of data from the dataframe
-        last_sequence_df = df.iloc[-past_len:][feature_cols]
+        criterion = nn.MSELoss()
+        model = StockLongPredictor(input_size=input_size, hidden_size=128, output_size=predict_len).to(device)
+        optimizer =torch.optim.Adam(model.parameters(), lr=1e-4)
+        for epoch in range(epochs):
+            model.train()
+            total_loss = 0
+            for X_batch, Y_batch in train_dataloader:
+                optimizer.zero_grad()
+                outputs = model(X_batch)
+                loss = criterion(outputs, Y_batch)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            if (epoch+1) % 5 == 0 or epoch == 0:
+                print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {total_loss / len(train_dataloader):.6f}')
+        model.eval()
+        total_test_loss = 0
+        with torch.no_grad():
+            for X_batch, Y_batch in test_dataloader:
+                outputs = model(X_batch)
+                loss = criterion(outputs, Y_batch)
+                total_test_loss += loss.item()
+        avg_loss = total_test_loss / len(test_dataloader)
+        print(f'Average Test Loss: {avg_loss:.6f}')
+        # 最新株価を予測
+        print("\nPredicting the next", predict_len, "days...")
+        with torch.no_grad():
+            # 1. Get the last `past_len` days of data from the dataframe
+            last_sequence_df = df.iloc[-past_len:][feature_cols]
 
-        # 2. Convert it to a numpy array and then to a PyTorch tensor
-        last_sequence_np = last_sequence_df.values.astype(np.float32)
-        # Add a batch dimension (from shape [50, 6] to [1, 50, 6])
-        input_tensor = torch.from_numpy(last_sequence_np).unsqueeze(0).to(device)
+            # 2. Convert it to a numpy array and then to a PyTorch tensor
+            last_sequence_np = last_sequence_df.values.astype(np.float32)
+            # Add a batch dimension (from shape [50, 6] to [1, 50, 6])
+            input_tensor = torch.from_numpy(last_sequence_np).unsqueeze(0).to(device)
 
-        # 3. Make the prediction
-        # The output will be in the scaled format
-        prediction_scaled = model(input_tensor)
+            # 3. Make the prediction
+            # The output will be in the scaled format
+            prediction_scaled = model(input_tensor)
 
-        # 4. Inverse transform the prediction to get the actual price
-        # Move tensor to CPU, convert to numpy, reshape for the scaler
-        prediction_np = prediction_scaled.cpu().numpy().reshape(-1, 1)
-        prediction_unscaled = scaler.inverse_transform(prediction_np)
+            # 4. Inverse transform the prediction to get the actual price
+            # Move tensor to CPU, convert to numpy, reshape for the scaler
+            prediction_np = prediction_scaled.cpu().numpy().reshape(-1, 1)
+            prediction_unscaled = scaler.inverse_transform(prediction_np)
 
-        # 5. Create dates for the prediction period
-        last_date = df.index[-1]
-        # Use 'B' frequency for business days
-        prediction_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=predict_len, freq='B')
+            # 5. Create dates for the prediction period
+            last_date = df.index[-1]
+            # Use 'B' frequency for business days
+            prediction_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=predict_len, freq='B')
 
-        # Create a pandas Series for the predictions for easy viewing
-        prediction_series = pd.Series(prediction_unscaled.flatten(), index=prediction_dates, name="Predicted Close")
-        print("\n--- Predicted Stock Prices ---")
-        print(prediction_series)
-    
+            # Create a pandas Series for the predictions for easy viewing
+            prediction_series = pd.Series(prediction_unscaled.flatten(), index=prediction_dates, name="Predicted Close")
+            print("\n--- Predicted Stock Prices ---")
+            print(prediction_series)
+    except Exception as e:
+        print(f"LSTM Prediction Error: {e}")
+        # Fallback to returning a simple series with the last price repeated
+        last_price = float(df['Close'].iloc[-1]) if not df.empty else 0
+        prediction_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=predict_len, freq='B')
+        return pd.Series([last_price] * predict_len, index=prediction_dates)
+
 
     return prediction_series
 
@@ -294,15 +300,19 @@ def index(ticker):
     # --- Chart and Prediction ---
     df = stock.history(period="1y")
     
-    # Select prediction model based on URL query parameter
+    # URLからpredict_len（予測日数）を取得。デフォルトは10
+    try:
+        predict_len = int(request.args.get('predict_len', 10))
+    except (ValueError, TypeError):
+        predict_len = 10 # エラーの場合はデフォルト値に戻す
+
     model_type = request.args.get('model', 'ridge').lower()
     print(f"model_type = {model_type}")
     if model_type == 'lstm':
-        prediction_series = predict_with_lstm(df)
+        prediction_series = predict_with_lstm(df, predict_len=predict_len)
     else:
-        # Default to Ridge model
         model_type = 'ridge'
-        prediction_series = predict_with_lstm(df)
+        prediction_series = predict_with_lstm(df, predict_len=predict_len)
     
     predicted_price = prediction_series.iloc[0]
     prediction_labels = prediction_series.index.strftime('%Y-%m-%d').tolist()
@@ -311,10 +321,9 @@ def index(ticker):
     # Prepare data for Chart.js
     last_date = df.index[-1]
     
-    # The prediction line connects today's close with tomorrow's prediction
     prediction_data_points = [None] * (len(df)-1) + [df['Close'].iloc[-1]] + prediction_data
     labels = df.index.strftime('%Y-%m-%d').tolist() + prediction_labels
-    data = df['Close'].tolist() + [None] * len(prediction_data) # Historical data points
+    data = df['Close'].tolist() + [None] * len(prediction_data)
     
     chart_data = {
         'labels': labels, 'data': data, 'prediction_data': prediction_data_points,
@@ -330,9 +339,8 @@ def index(ticker):
         portfolio=portfolio,
         holdings=holdings_with_value,
         predicted_price=predicted_price_rounded,
-        model_type=model_type # Pass model type to the template
+        model_type=model_type
     )
-
 
 @app.route('/portfolio')
 def portfolio_page():
