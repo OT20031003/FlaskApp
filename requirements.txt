@@ -5,3 +5,4 @@ yfinance
 pandas
 scikit-learn
 numpy
+google-generativeai
