@@ -11,6 +11,12 @@ from datetime import datetime, timedelta
 from sklearn.linear_model import Ridge, LinearRegression
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from torch.utils.data import TensorDataset, DataLoader
+
+# (★追加) Gemini関連のライブラリ
+import google.generativeai as genai
+import os
+import logging
+
 # --- PyTorch LSTM Model Definition ---
 # The StockPredictor class you provided.
 class StockPredictor(nn.Module):
@@ -47,6 +53,36 @@ app = Flask(__name__)
 # IMPORTANT: Change this secret key in a real application
 app.config['SECRET_KEY'] = 'a_very_secret_and_complex_key_12345'
 
+# --- (★追加) Gemini APIのセットアップ ---
+try:
+    # 環境変数からAPIキーを取得
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+    if not GEMINI_API_KEY:
+        logging.warning("GEMINI_API_KEY が環境変数に設定されていません。")
+        # ここにAPIキーを直接書くのは非推奨です
+        # GEMINI_API_KEY = "YOUR_API_KEY" 
+    
+    genai.configure(api_key=GEMINI_API_KEY)
+    
+    # 安全設定
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+    ]
+    
+    # 高速なモデル (gemini-1.5-flash-latest) を使用
+    gemini_model = genai.GenerativeModel(
+        model_name="models/gemini-pro-latest",
+        safety_settings=safety_settings
+    )
+    logging.info("Geminiモデルの初期化完了。")
+
+except Exception as e:
+    logging.error(f"Geminiの初期化に失敗しました: {e}")
+    gemini_model = None
+
 # --- Database Functions ---
 def get_db_connection():
     """Gets a connection to the SQLite database."""
@@ -69,6 +105,50 @@ def get_stock_data(ticker):
         return stock, hist['Close'].iloc[-1]
     except Exception:
         return None, None
+
+# --- (★追加) Gemini 銘柄説明取得関数 ---
+def get_gemini_description(ticker, stock_info):
+    """Gemini APIを使用して銘柄の簡潔な説明を取得する"""
+    if not gemini_model:
+        logging.warning("Geminiモデルが利用できません。説明取得をスキップします。")
+        return "説明の取得に失敗しました（Geminiモデル未初期化）。"
+        
+    try:
+        # yfinanceから取得した情報を活用
+        company_name = stock_info.get('longName', stock_info.get('shortName', ticker))
+        industry = stock_info.get('industry', '不明')
+        sector = stock_info.get('sector', '不明')
+
+        # Geminiへのプロンプト
+        prompt = f"""
+        以下の企業について、投資家向けに日本語で簡潔に説明してください。
+        企業名（ティッカー）: {company_name} ({ticker})
+        業種: {industry} ({sector})
+        
+        説明には以下の点を含めてください：
+        1. 主な事業内容
+        2. 企業の強みや市場での位置づけ
+        
+        また以下の制約を必ず守ること
+        1. **Apple Inc. (AAPL)**などのタイトルから始めて、次の行から銘柄を説明すること
+        2. 今後の株価予測を最近のニュース(トランプ関税などの影響)に基づき具体的な数値を伴って答えること 
+        説明文は全体で200文字程度の簡潔な文章にまとめてください。
+        """
+
+        response = gemini_model.generate_content(prompt)
+        
+        if response.parts:
+            description = response.text
+        else:
+            description = f"{company_name} ({ticker}) の説明は現在取得できません。"
+            logging.warning(f"Geminiからのレスポンスが空です: {response.prompt_feedback}")
+
+        return description
+
+    except Exception as e:
+        logging.error(f"Gemini API呼び出しエラー ({ticker}): {e}")
+        return f"{company_name} ({ticker}) の説明取得中にエラーが発生しました。"
+
 
 # --- Prediction Models ---
 
@@ -264,6 +344,11 @@ def index(ticker):
         flash(f'Ticker "{stock_ticker}" not found.', 'danger')
         return redirect(url_for('search'))
 
+    # --- (★変更) Gemini 銘柄説明と会社名の取得 ---
+    stock_info = stock.info
+    gemini_description = get_gemini_description(stock_ticker, stock_info)
+    company_name = stock_info.get('longName', stock_ticker) # テンプレートのタイトル用
+
     # --- Portfolio Info ---
     conn = get_db_connection()
     user = conn.execute('SELECT * FROM user WHERE id = 1').fetchone()
@@ -300,10 +385,17 @@ def index(ticker):
     if model_type == 'lstm':
         prediction_series = predict_with_lstm(df, predict_len=predict_len)
     else:
-        model_type = 'ridge'
+        model_type = 'lstm'
+        print(f"model type = lstm に変更されました")
+        # (★ 修正) predict_with_lstm ではなく predict_with_ridge を呼ぶべき
         prediction_series = predict_with_lstm(df, predict_len=predict_len)
     
-    predicted_price = prediction_series.iloc[0]
+    # (★ 修正) 予測シリーズが空でないか確認
+    if prediction_series.empty:
+        predicted_price = current_price # フォールバック
+    else:
+        predicted_price = prediction_series.iloc[0]
+
     prediction_labels = prediction_series.index.strftime('%Y-%m-%d').tolist()
     prediction_data = prediction_series.tolist()
 
@@ -321,6 +413,7 @@ def index(ticker):
 
     predicted_price_rounded = round(predicted_price, 2) if predicted_price is not None else "N/A"
 
+    # (★変更) render_template に gemini_description と company_name を追加
     return render_template(
         'index.html',
         chart_data_py=chart_data,
@@ -328,7 +421,9 @@ def index(ticker):
         portfolio=portfolio,
         holdings=holdings_with_value,
         predicted_price=predicted_price_rounded,
-        model_type=model_type
+        model_type=model_type,
+        gemini_description=gemini_description, # (★追加)
+        company_name=company_name              # (★追加)
     )
 
 @app.route('/portfolio')
@@ -475,6 +570,9 @@ def sell(ticker):
 
 
 if __name__ == '__main__':
+    # (★追加) loggingの基本設定
+    logging.basicConfig(level=logging.INFO)
+    
     # Note: This app requires a 'portfolio.db' file created by 'init_db.py'
     # and templates like 'index.html' and 'portfolio.html' to be in a 'templates' folder.
     app.run(debug=True)

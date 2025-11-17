@@ -10,6 +10,10 @@ conda activate stockapp
 ```
 pip install -r requirements.txt
 ```
+環境変数の設定
+```
+export GEMINI_API_KEY="YOUR_GEMINI_API"
+```
 仮想環境の無効化
 ```
 conda deactivate

@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 
-{% block title %}株価チャート{% endblock %}
+{% block title %}{{ company_name | default(chart_data_py.ticker) }} 株価チャート{% endblock %}
 
 {% block content %}
 <div class="row">
     <div class="col-md-8">
-        <h2>{{ chart_data_py.ticker }} 株価チャート</h2>
+        
+        <h1 class="mb-3">{{ company_name | default(chart_data_py.ticker) }} ({{ chart_data_py.ticker }}) 株価チャート</h1>
         
         {% with messages = get_flashed_messages(with_categories=true) %}
           {% if messages %}
@@ -14,6 +15,15 @@
             {% endfor %}
           {% endif %}
         {% endwith %}
+
+        {% if gemini_description %}
+        <div class="card mb-4 bg-light border-secondary">
+            <div class="card-body">
+                <h5 class="card-title text-secondary">🤖 銘柄概要 (by Gemini)</h5>
+                <p class="card-text" style="white-space: pre-wrap;">{{ gemini_description }}</p>
+            </div>
+        </div>
+        {% endif %}
 
         <div class="chart-container mt-3">
             <canvas id="stockChart"></canvas>
