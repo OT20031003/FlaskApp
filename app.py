@@ -130,8 +130,8 @@ def get_gemini_description(ticker, stock_info):
         2. 企業の強みや市場での位置づけ
         
         また以下の制約を必ず守ること
-        1. **Apple Inc. (AAPL)**などのタイトルから始めて、次の行から銘柄を説明すること
-        2. 今後の株価予測を最近のニュース(トランプ関税などの影響)に基づき具体的な数値を伴って答えること 
+        1. 銘柄名から始めて、次の行から銘柄を説明すること
+        2. 銘柄に関連する最近のニュース(トランプ関税、ドル安などの影響)も述べること
         説明文は全体で200文字程度の簡潔な文章にまとめてください。
         """
 
@@ -380,51 +380,76 @@ def index(ticker):
     except (ValueError, TypeError):
         predict_len = 10 # エラーの場合はデフォルト値に戻す
 
-    model_type = request.args.get('model', 'ridge').lower()
-    print(f"model_type = {model_type}")
-    if model_type == 'lstm':
-        prediction_series = predict_with_lstm(df, predict_len=predict_len)
-    else:
-        model_type = 'lstm'
-        print(f"model type = lstm に変更されました")
-        # (★ 修正) predict_with_lstm ではなく predict_with_ridge を呼ぶべき
-        prediction_series = predict_with_lstm(df, predict_len=predict_len)
+    # --- (★変更) 両方のモデルで予測 ---
+    lstm_prediction_series = predict_with_lstm(df, predict_len=predict_len)
+    ridge_prediction_series = predict_with_ridge(df, predict_len=predict_len) # (★バグ修正)
     
-    # (★ 修正) 予測シリーズが空でないか確認
-    if prediction_series.empty:
-        predicted_price = current_price # フォールバック
+    # (★変更) 両モデルの予測値を取得
+    if not lstm_prediction_series.empty:
+        predicted_price_lstm_val = lstm_prediction_series.iloc[0]
     else:
-        predicted_price = prediction_series.iloc[0]
+        predicted_price_lstm_val = current_price # フォールバック
 
-    prediction_labels = prediction_series.index.strftime('%Y-%m-%d').tolist()
-    prediction_data = prediction_series.tolist()
+    if not ridge_prediction_series.empty:
+        predicted_price_ridge_val = ridge_prediction_series.iloc[0] # (★追加)
+    else:
+        predicted_price_ridge_val = current_price # フォールバック
+
+    # ... (chart_dataの準備ロジックは前回の修正通り) ...
+    # --- (★↓ ここから不足していたブロックを挿入 ↓) ---
+    
+    # 予測用のラベル（両モデルで共通のはず）
+    if not lstm_prediction_series.empty:
+        prediction_labels = lstm_prediction_series.index.strftime('%Y-%m-%d').tolist()
+    elif not ridge_prediction_series.empty:
+        prediction_labels = ridge_prediction_series.index.strftime('%Y-%m-%d').tolist()
+    else:
+        # 両方空の場合のフォールバック
+        last_date_for_label = df.index[-1]
+        prediction_labels = pd.date_range(start=last_date_for_label + pd.Timedelta(days=1), periods=predict_len, freq='B').strftime('%Y-%m-%d').tolist()
+
+    
+    # (★変更) 両モデルの予測データをリストに変換
+    prediction_data_lstm = lstm_prediction_series.tolist()
+    prediction_data_ridge = ridge_prediction_series.tolist()
 
     # Prepare data for Chart.js
     last_date = df.index[-1]
     
-    prediction_data_points = [None] * (len(df)-1) + [df['Close'].iloc[-1]] + prediction_data
+    # (★変更) 両モデルの予測ポイントを作成
+    prediction_data_points_lstm = [None] * (len(df)-1) + [df['Close'].iloc[-1]] + prediction_data_lstm
+    prediction_data_points_ridge = [None] * (len(df)-1) + [df['Close'].iloc[-1]] + prediction_data_ridge
+    
     labels = df.index.strftime('%Y-%m-%d').tolist() + prediction_labels
-    data = df['Close'].tolist() + [None] * len(prediction_data)
+    data = df['Close'].tolist() + [None] * len(prediction_labels) # 実績データ
     
     chart_data = {
-        'labels': labels, 'data': data, 'prediction_data': prediction_data_points,
-        'ticker': stock_ticker, 'current_price': round(current_price, 2)
+        'labels': labels, 
+        'data': data, 
+        'prediction_data_lstm': prediction_data_points_lstm,
+        'prediction_data_ridge': prediction_data_points_ridge,
+        'ticker': stock_ticker, 
+        'current_price': round(current_price, 2)
     }
+    # --- (★↑ ここまで不足していたブロックを挿入 ↑) ---
+    # (★変更) 両方の予測値を丸める
+    predicted_price_lstm_rounded = round(predicted_price_lstm_val, 2) if predicted_price_lstm_val is not None else "N/A"
+    predicted_price_ridge_rounded = round(predicted_price_ridge_val, 2) if predicted_price_ridge_val is not None else "N/A"
 
-    predicted_price_rounded = round(predicted_price, 2) if predicted_price is not None else "N/A"
-
-    # (★変更) render_template に gemini_description と company_name を追加
+    # (★変更) render_template に渡す変数を修正
     return render_template(
         'index.html',
         chart_data_py=chart_data,
         chart_data_json=json.dumps(chart_data),
         portfolio=portfolio,
         holdings=holdings_with_value,
-        predicted_price=predicted_price_rounded,
-        model_type=model_type,
-        gemini_description=gemini_description, # (★追加)
-        company_name=company_name              # (★追加)
+        predicted_price_lstm=predicted_price_lstm_rounded,  # (★変更)
+        predicted_price_ridge=predicted_price_ridge_rounded, # (★追加)
+        model_type='both',
+        gemini_description=gemini_description, 
+        company_name=company_name
     )
+
 
 @app.route('/portfolio')
 def portfolio_page():

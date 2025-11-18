@@ -31,6 +31,7 @@
     </div>
 
     <div class="col-md-4">
+        
         <div class="card mb-4">
             <div class="card-body">
                 <h5 class="card-title">銘柄検索</h5>
@@ -47,7 +48,10 @@
             <div class="card-body">
                 <h5 class="card-title">取引: {{ chart_data_py.ticker }}</h5>
                 <p class="card-text">現在価格: ${{ chart_data_py.current_price }}</p>
-                <p class="card-text">翌日予測: <span class="badge bg-info">${{ predicted_price }}</span></p>
+                
+                <p class="card-text">翌日予測 (LSTM): <span class="badge bg-info">${{ predicted_price_lstm }}</span></p>
+                
+                <p class="card-text">翌日予測 (Ridge): <span class="badge bg-warning text-dark">${{ predicted_price_ridge }}</span></p>
 
                 <form method="GET" action="{{ url_for('index', ticker=chart_data_py.ticker) }}" class="row g-2 align-items-center mb-3">
                     <div class="col-auto">
@@ -110,14 +114,58 @@
         window.location.href = '/stock/' + ticker;
     });
 
-    // チャート描画
+    // チャート描画 (前回のリクエストで修正済み)
     const chartData = JSON.parse('{{ chart_data_json | safe }}');
     const ctx = document.getElementById('stockChart').getContext('2d');
     const myChart = new Chart(ctx, {
-        type: 'line', data: { labels: chartData.labels,
-        datasets: [ { label: `${chartData.ticker} の終値（実績）`, data: chartData.data, borderColor: 'rgba(75, 192, 192, 1)', borderWidth: 2, fill: false, tension: 0.1, pointRadius: 1, pointHitRadius: 10 },
-                    { label: '予測', data: chartData.prediction_data, borderColor: 'rgba(255, 99, 132, 1)', borderWidth: 2, borderDash: [5, 5], fill: false, tension: 0.1, pointRadius: 1, pointHitRadius: 10 } ] },
-        options: { scales: { y: { beginAtZero: false } } }
+        type: 'line', 
+        data: { 
+            labels: chartData.labels,
+            datasets: [ 
+                { 
+                    label: `${chartData.ticker} の終値（実績）`, 
+                    data: chartData.data, 
+                    borderColor: 'rgba(75, 192, 192, 1)', // 青緑
+                    borderWidth: 2, 
+                    fill: false, 
+                    tension: 0.1, 
+                    pointRadius: 1, 
+                    pointHitRadius: 10 
+                },
+                { 
+                    label: '予測 (LSTM)',
+                    data: chartData.prediction_data_lstm, 
+                    borderColor: 'rgba(255, 99, 132, 1)', // 赤
+                    borderWidth: 2, 
+                    borderDash: [5, 5], // 破線
+                    fill: false, 
+                    tension: 0.1, 
+                    pointRadius: 1, 
+                    pointHitRadius: 10 
+                },
+                { 
+                    label: '予測 (Ridge)',
+                    data: chartData.prediction_data_ridge,
+                    borderColor: 'rgba(255, 159, 64, 1)', // オレンジ
+                    borderWidth: 2, 
+                    borderDash: [10, 5], // 別の破線
+                    fill: false, 
+                    tension: 0.1, 
+                    pointRadius: 1, 
+                    pointHitRadius: 10 
+                }
+            ] 
+        },
+        options: { 
+            scales: { 
+                y: { beginAtZero: false } 
+            },
+            plugins: {
+                legend: {
+                    display: true
+                }
+            }
+        }
     });
 </script>
 {% endblock %}
