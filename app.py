@@ -347,7 +347,7 @@ def predict_with_ridge(df, n_lags=5, use_days=180, predict_len=10):
         model = Ridge(alpha=1.0)
         model.fit(Xs_train, y_train)
 
-        # --- (★ NEW) 2. Model Evaluation (on 30% test data) ---
+        #  2. Model Evaluation (on 30% test data) ---
         if not data_test.empty:
             X_test = data_test[feature_cols].values
             y_test_actual = data_test['Close'].values # Ground truth
@@ -450,7 +450,7 @@ def index(ticker):
         flash(f'Ticker "{stock_ticker}" not found.', 'danger')
         return redirect(url_for('search'))
 
-    # --- (★変更) Gemini 銘柄説明と会社名の取得 ---
+    # --- Gemini 銘柄説明と会社名の取得 ---
     stock_info = stock.info
     gemini_description = get_gemini_description(stock_ticker, stock_info)
     company_name = stock_info.get('longName', stock_ticker) # テンプレートのタイトル用
@@ -486,11 +486,11 @@ def index(ticker):
     except (ValueError, TypeError):
         predict_len = 10 # エラーの場合はデフォルト値に戻す
 
-    # --- (★変更) 両方のモデルで予測 ---
+    # --- 両方のモデルで予測 ---
     lstm_prediction_series = predict_with_lstm(df, predict_len=predict_len)
     ridge_prediction_series = predict_with_ridge(df, predict_len=predict_len) # (★バグ修正)
     
-    # (★変更) 両モデルの予測値を取得
+    # 両モデルの予測値を取得
     if not lstm_prediction_series.empty:
         predicted_price_lstm_val = lstm_prediction_series.iloc[0]
     else:
@@ -501,8 +501,7 @@ def index(ticker):
     else:
         predicted_price_ridge_val = current_price # フォールバック
 
-    # ... (chart_dataの準備ロジックは前回の修正通り) ...
-    # --- (★↓ ここから不足していたブロックを挿入 ↓) ---
+   
     
     # 予測用のラベル（両モデルで共通のはず）
     if not lstm_prediction_series.empty:
@@ -515,14 +514,14 @@ def index(ticker):
         prediction_labels = pd.date_range(start=last_date_for_label + pd.Timedelta(days=1), periods=predict_len, freq='B').strftime('%Y-%m-%d').tolist()
 
     
-    # (★変更) 両モデルの予測データをリストに変換
+    # 両モデルの予測データをリストに変換
     prediction_data_lstm = lstm_prediction_series.tolist()
     prediction_data_ridge = ridge_prediction_series.tolist()
 
     # Prepare data for Chart.js
     last_date = df.index[-1]
     
-    # (★変更) 両モデルの予測ポイントを作成
+    #両モデルの予測ポイントを作成
     prediction_data_points_lstm = [None] * (len(df)-1) + [df['Close'].iloc[-1]] + prediction_data_lstm
     prediction_data_points_ridge = [None] * (len(df)-1) + [df['Close'].iloc[-1]] + prediction_data_ridge
     
@@ -537,20 +536,18 @@ def index(ticker):
         'ticker': stock_ticker, 
         'current_price': round(current_price, 2)
     }
-    # --- (★↑ ここまで不足していたブロックを挿入 ↑) ---
-    # (★変更) 両方の予測値を丸める
+    
     predicted_price_lstm_rounded = round(predicted_price_lstm_val, 2) if predicted_price_lstm_val is not None else "N/A"
     predicted_price_ridge_rounded = round(predicted_price_ridge_val, 2) if predicted_price_ridge_val is not None else "N/A"
 
-    # (★変更) render_template に渡す変数を修正
     return render_template(
         'index.html',
         chart_data_py=chart_data,
         chart_data_json=json.dumps(chart_data),
         portfolio=portfolio,
         holdings=holdings_with_value,
-        predicted_price_lstm=predicted_price_lstm_rounded,  # (★変更)
-        predicted_price_ridge=predicted_price_ridge_rounded, # (★追加)
+        predicted_price_lstm=predicted_price_lstm_rounded,  
+        predicted_price_ridge=predicted_price_ridge_rounded, 
         model_type='both',
         gemini_description=gemini_description, 
         company_name=company_name
@@ -701,9 +698,10 @@ def sell(ticker):
 
 
 if __name__ == '__main__':
-    # (★追加) loggingの基本設定
+    # loggingの基本設定
     logging.basicConfig(level=logging.INFO)
     
     # Note: This app requires a 'portfolio.db' file created by 'init_db.py'
     # and templates like 'index.html' and 'portfolio.html' to be in a 'templates' folder.
+
     app.run(debug=True)
