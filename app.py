@@ -13,7 +13,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from torch.utils.data import TensorDataset, DataLoader
 
-# (★追加) Gemini関連のライブラリ
+
 import google.generativeai as genai
 import os
 import logging
@@ -54,7 +54,7 @@ app = Flask(__name__)
 # IMPORTANT: Change this secret key in a real application
 app.config['SECRET_KEY'] = 'a_very_secret_and_complex_key_12345'
 
-# --- (★追加) Gemini APIのセットアップ ---
+# --- Gemini APIのセットアップ ---
 try:
     # 環境変数からAPIキーを取得
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -107,7 +107,7 @@ def get_stock_data(ticker):
     except Exception:
         return None, None
 
-# --- (★追加) Gemini 銘柄説明取得関数 ---
+# --- Gemini 銘柄説明取得関数 ---
 def get_gemini_description(ticker, stock_info):
     """Gemini APIを使用して銘柄の簡潔な説明を取得する"""
     if not gemini_model:
@@ -210,7 +210,7 @@ def predict_with_lstm(df, sequence_length=40, epochs=100, predict_len=10):
                 print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {total_loss / len(train_dataloader):.6f}')
         model.eval()
         total_test_loss = 0
-        # (★追加) 評価指標計算用のリスト
+        # 評価指標計算用のリスト
         all_predictions_unscaled = []
         all_targets_unscaled = []
 
@@ -220,7 +220,7 @@ def predict_with_lstm(df, sequence_length=40, epochs=100, predict_len=10):
                 loss = criterion(outputs, Y_batch)
                 total_test_loss += loss.item()
 
-                # (★変更) バッチの予測結果と実測値を逆正規化
+                # バッチの予測結果と実測値を逆正規化
                 batch_predictions_scaled = outputs.cpu().numpy()
                 batch_targets_scaled = Y_batch.cpu().numpy()
 
@@ -302,7 +302,6 @@ def predict_with_lstm(df, sequence_length=40, epochs=100, predict_len=10):
 def predict_with_ridge(df, n_lags=5, use_days=180, predict_len=10):
     """
     Predicts the next N days' closing price using Ridge Regression with feature engineering.
-    (★ MODIFIED to include train/test split for evaluation)
     """
     try:
         df_local = df.copy().sort_index()
@@ -325,7 +324,7 @@ def predict_with_ridge(df, n_lags=5, use_days=180, predict_len=10):
         data['dow_cos'] = np.cos(2 * np.pi * dow / 7)
         data = data.fillna(method='bfill').dropna()
 
-        # (★ NEW) Train/Test Split for Evaluation (70/30 split)
+        # Train/Test Split for Evaluation (70/30 split)
         train_len = int(len(data) * 0.7)
         data_train = data.iloc[:train_len]
         data_test = data.iloc[train_len:]
@@ -488,7 +487,7 @@ def index(ticker):
 
     # --- 両方のモデルで予測 ---
     lstm_prediction_series = predict_with_lstm(df, predict_len=predict_len)
-    ridge_prediction_series = predict_with_ridge(df, predict_len=predict_len) # (★バグ修正)
+    ridge_prediction_series = predict_with_ridge(df, predict_len=predict_len) 
     
     # 両モデルの予測値を取得
     if not lstm_prediction_series.empty:
@@ -497,7 +496,7 @@ def index(ticker):
         predicted_price_lstm_val = current_price # フォールバック
 
     if not ridge_prediction_series.empty:
-        predicted_price_ridge_val = ridge_prediction_series.iloc[0] # (★追加)
+        predicted_price_ridge_val = ridge_prediction_series.iloc[0] 
     else:
         predicted_price_ridge_val = current_price # フォールバック
 
