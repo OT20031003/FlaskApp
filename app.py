@@ -10,6 +10,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from sklearn.linear_model import Ridge, LinearRegression
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 from torch.utils.data import TensorDataset, DataLoader
 
 # (★追加) Gemini関連のライブラリ
@@ -151,7 +152,6 @@ def get_gemini_description(ticker, stock_info):
 
 
 # --- Prediction Models ---
-
 def predict_with_lstm(df, sequence_length=40, epochs=100, predict_len=10):
     try:
         df.reset_index()
@@ -210,15 +210,68 @@ def predict_with_lstm(df, sequence_length=40, epochs=100, predict_len=10):
                 print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {total_loss / len(train_dataloader):.6f}')
         model.eval()
         total_test_loss = 0
+        # (★追加) 評価指標計算用のリスト
+        all_predictions_unscaled = []
+        all_targets_unscaled = []
+
         with torch.no_grad():
             for X_batch, Y_batch in test_dataloader:
                 outputs = model(X_batch)
                 loss = criterion(outputs, Y_batch)
                 total_test_loss += loss.item()
+
+                # (★変更) バッチの予測結果と実測値を逆正規化
+                batch_predictions_scaled = outputs.cpu().numpy()
+                batch_targets_scaled = Y_batch.cpu().numpy()
+
+                # scaler.inverse_transform は (n_samples, n_features=1) を期待する
+                for i in range(batch_predictions_scaled.shape[0]): # バッチ内の各サンプル
+                    # 予測値: (predict_len,) -> (predict_len, 1) -> 逆変換 -> (predict_len, 1) -> flatten -> (predict_len,)
+                    pred_unscaled = scaler.inverse_transform(batch_predictions_scaled[i].reshape(-1, 1)).flatten()
+                    # 実測値: (predict_len,) -> (predict_len, 1) -> 逆変換 -> (predict_len, 1) -> flatten -> (predict_len,)
+                    target_unscaled = scaler.inverse_transform(batch_targets_scaled[i].reshape(-1, 1)).flatten()
+                    
+                    all_predictions_unscaled.extend(pred_unscaled)
+                    all_targets_unscaled.extend(target_unscaled)
+
         avg_loss = total_test_loss / len(test_dataloader)
-        print(f'Average Test Loss: {avg_loss:.6f}')
+        print(f'Average Test Loss (Scaled MSE): {avg_loss:.6f}') # 元の損失
+        
         # 最新株価を予測
         print("\nPredicting the next", predict_len, "days...")
+        if all_targets_unscaled:
+            try:
+                targets_np = np.array(all_targets_unscaled)
+                predictions_np = np.array(all_predictions_unscaled)
+                
+                # ゼロ割を避けるための微小値（MAPE計算用）
+                epsilon = 1e-8 
+
+                print(f'\n--- Test Data Evaluation Metrics (Unscaled) ---')
+                
+                # MAE (Mean Absolute Error) / 平均絶対誤差 (ドル単位)
+                mae = mean_absolute_error(targets_np, predictions_np)
+                print(f'MAE (Mean Absolute Error): ${mae:.4f}')
+                # (↓ 英語に変更)
+                print(f'  (Interpretation: On average, the prediction was off by ${mae:.4f} across the test data.)')
+
+                # RMSE (Root Mean Squared Error) / 二乗平均平方根誤差 (ドル単位)
+                rmse = np.sqrt(mean_squared_error(targets_np, predictions_np))
+                print(f'RMSE (Root Mean Squared Error): ${rmse:.4f}')
+                # (↓ 英語に変更)
+                print(f'  (Interpretation: Similar to MAE in dollar terms, but gives more weight to large errors.)')
+                
+                # MAPE (Mean Absolute Percentage Error) / 平均絶対パーセント誤差 (%)
+                # ゼロ割を避けるため、(targets_np + epsilon) で割ります。
+                mape = np.mean(np.abs((targets_np - predictions_np) / (targets_np + epsilon))) * 100
+                print(f'MAPE (Mean Absolute Percentage Error): {mape:.4f}%')
+                # (↓ 英語に変更)
+                print(f'  (Interpretation: On average, the prediction was off by {mape:.4f}% across the test data.)')
+                print(f'-------------------------------------------------')
+
+            except Exception as e:
+                # (↓ 英語に変更)
+                print(f"Error during calculation of evaluation metrics: {e}")
         with torch.no_grad():
             last_sequence_df = df.iloc[-past_len:][feature_cols]
             last_sequence_np = last_sequence_df.values.astype(np.float32)
@@ -244,6 +297,7 @@ def predict_with_lstm(df, sequence_length=40, epochs=100, predict_len=10):
 
 
     return prediction_series
+
 
 def predict_with_ridge(df, n_lags=5, use_days=180, predict_len=10):
     """
