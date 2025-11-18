@@ -302,6 +302,7 @@ def predict_with_lstm(df, sequence_length=40, epochs=100, predict_len=10):
 def predict_with_ridge(df, n_lags=5, use_days=180, predict_len=10):
     """
     Predicts the next N days' closing price using Ridge Regression with feature engineering.
+    (★ MODIFIED to include train/test split for evaluation)
     """
     try:
         df_local = df.copy().sort_index()
@@ -311,7 +312,7 @@ def predict_with_ridge(df, n_lags=5, use_days=180, predict_len=10):
             prediction_dates = pd.date_range(start=df_local.index[-1] + pd.Timedelta(days=1), periods=predict_len, freq='B')
             return pd.Series([last_price] * predict_len, index=prediction_dates)
 
-        # Feature Engineering
+        # Feature Engineering (Same as original)
         data = pd.DataFrame(index=df_local.index)
         data['Close'] = df_local['Close']
         for lag in range(1, n_lags + 1):
@@ -324,52 +325,105 @@ def predict_with_ridge(df, n_lags=5, use_days=180, predict_len=10):
         data['dow_cos'] = np.cos(2 * np.pi * dow / 7)
         data = data.fillna(method='bfill').dropna()
 
-        data_train = data.iloc[-use_days:] if len(data) > use_days else data
+        # (★ NEW) Train/Test Split for Evaluation (70/30 split)
+        train_len = int(len(data) * 0.7)
+        data_train = data.iloc[:train_len]
+        data_test = data.iloc[train_len:]
+
+        if data_train.empty or data_test.empty:
+            print("Not enough data to perform train/test split for Ridge.")
+            # Fallback to original prediction logic without evaluation
+            # (Note: This skips evaluation)
+            data_train = data # Use all data if split failed
         
-        feature_cols = [c for c in data_train.columns if c != 'Close']
-        X = data_train[feature_cols].values
-        y = data_train['Close'].values
-
-        # Model Training
+        feature_cols = [c for c in data.columns if c != 'Close']
+        
+        # --- 1. Model Training (on 70% train data) ---
+        X_train = data_train[feature_cols].values
+        y_train = data_train['Close'].values
+        
         scaler = StandardScaler()
-        Xs = scaler.fit_transform(X)
+        Xs_train = scaler.fit_transform(X_train) # Fit scaler ONLY on train data
         model = Ridge(alpha=1.0)
-        model.fit(Xs, y)
+        model.fit(Xs_train, y_train)
 
-        # Iterative Prediction
+        # --- (★ NEW) 2. Model Evaluation (on 30% test data) ---
+        if not data_test.empty:
+            X_test = data_test[feature_cols].values
+            y_test_actual = data_test['Close'].values # Ground truth
+            
+            Xs_test = scaler.transform(X_test) # Use SAME scaler from training
+            y_test_pred = model.predict(Xs_test)
+
+            print(f'\n--- Ridge Test Data Evaluation Metrics ---')
+            try:
+                epsilon = 1e-8
+                mae = mean_absolute_error(y_test_actual, y_test_pred)
+                print(f'MAE (Mean Absolute Error): ${mae:.4f}')
+                print(f'  (Interpretation: On average, the prediction was off by ${mae:.4f}.)')
+
+                rmse = np.sqrt(mean_squared_error(y_test_actual, y_test_pred))
+                print(f'RMSE (Root Mean Squared Error): ${rmse:.4f}')
+                print(f'  (Interpretation: Similar to MAE, but gives more weight to large errors.)')
+
+                mape = np.mean(np.abs((y_test_actual - y_test_pred) / (y_test_actual + epsilon))) * 100
+                print(f'MAPE (Mean Absolute Percentage Error): {mape:.4f}%')
+                print(f'  (Interpretation: On average, the prediction was off by {mape:.4f}%.)')
+                print(f'-------------------------------------------------')
+            except Exception as e:
+                print(f"Error during Ridge evaluation: {e}")
+
+        # --- 3. Retrain Model on ALL Data for Future Prediction ---
+        # (This uses the full 'data' DataFrame)
+        X_full = data[feature_cols].values
+        y_full = data['Close'].values
+        
+        scaler_full = StandardScaler()
+        Xs_full = scaler_full.fit_transform(X_full)
+        model_full = Ridge(alpha=1.0)
+        model_full.fit(Xs_full, y_full)
+
+        # --- 4. Iterative Prediction (Original logic, but using 'model_full' and 'scaler_full') ---
         predictions = []
-        # Use a copy for manipulation
-        temp_df = df_local.copy()
+        temp_df = df_local.copy() # Start with the full history
 
         for _ in range(predict_len):
-            # Prepare features for the next day's prediction
+            # Prepare features for the next day's prediction (using 'temp_df')
             last_day_features = {}
             closes = temp_df['Close'].tolist()
             
             for lag in range(1, n_lags + 1):
                 last_day_features[f'lag_{lag}'] = closes[-lag]
             for w in (5, 10, 20):
-                last_day_features[f'ma_{w}'] = temp_df['Close'].rolling(window=w).mean().iloc[-1]
-                last_day_features[f'std_{w}'] = temp_df['Close'].rolling(window=w).std().iloc[-1]
+                # Calculate rolling features from the *end* of the temp_df
+                ma = temp_df['Close'].rolling(window=w).mean().iloc[-1]
+                std = temp_df['Close'].rolling(window=w).std().iloc[-1]
+                # Handle NaNs if window is larger than available data
+                last_day_features[f'ma_{w}'] = ma if not pd.isna(ma) else closes[-1]
+                last_day_features[f'std_{w}'] = std if not pd.isna(std) else 0.0
             
             next_day = temp_df.index[-1] + pd.Timedelta(days=1)
             dow_next = next_day.dayofweek
             last_day_features['dow_sin'] = np.sin(2 * np.pi * dow_next / 7)
             last_day_features['dow_cos'] = np.cos(2 * np.pi * dow_next / 7)
 
-            X_next = np.array([last_day_features[col] for col in feature_cols]).reshape(1, -1)
-            X_next_s = scaler.transform(X_next)
+            # Create the feature vector for prediction
+            X_next_list = [last_day_features[col] for col in feature_cols]
+            X_next = np.array(X_next_list).reshape(1, -1)
             
-            pred = model.predict(X_next_s)[0]
-            pred = float(pred) if pred > 0 else float(temp_df['Close'].iloc[-1])
+            # Use the scaler trained on ALL data
+            X_next_s = scaler_full.transform(X_next) 
+            
+            # Predict using the model trained on ALL data
+            pred = model_full.predict(X_next_s)[0] 
+            pred = float(pred) if pred > 0 else float(temp_df['Close'].iloc[-1]) # Ensure non-negative
             predictions.append(pred)
 
-            # Add the prediction to the temp_df to be used for the next iteration's features
-            # Create a new row as a DataFrame before concatenating
+            # Add the new prediction to temp_df for the next iteration
             new_row = pd.DataFrame({'Close': [pred]}, index=[next_day])
             temp_df = pd.concat([temp_df, new_row])
 
-
+        # Create the final Series to return
         last_date = df_local.index[-1]
         prediction_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=predict_len, freq='B')
         
@@ -381,8 +435,6 @@ def predict_with_ridge(df, n_lags=5, use_days=180, predict_len=10):
         last_price = float(df['Close'].iloc[-1]) if not df.empty else 0
         prediction_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=predict_len, freq='B')
         return pd.Series([last_price] * predict_len, index=prediction_dates)
-
-# --- Flask Routes ---
 
 @app.route('/')
 def search():
