@@ -1,8 +1,8 @@
 # 実行例
-<img src="./images/demo.PNG" width="300" alt="NVIDIA">
+<img src="./images/demo.PNG" width="1000" alt="NVIDIA">
 
 ## 株の購入時
-<img src="./images/buy_result.PNG" width="300" alt="AAPL">
+<img src="./images/buy_result.PNG" width="1000" alt="AAPL">
 
 仮想環境の作成
 ```
