@@ -107,14 +107,13 @@
 
 {% block scripts %}
 <script>
-    // 検索フォームの処理
+
     document.getElementById('searchForm').addEventListener('submit', function(e) {
         e.preventDefault();
         const ticker = document.getElementById('tickerInput').value.toUpperCase();
         window.location.href = '/stock/' + ticker;
     });
 
-    // チャート描画 (前回のリクエストで修正済み)
     const chartData = JSON.parse('{{ chart_data_json | safe }}');
     const ctx = document.getElementById('stockChart').getContext('2d');
     const myChart = new Chart(ctx, {
