@@ -130,10 +130,11 @@ def get_gemini_description(ticker, stock_info):
         1. 主な事業内容
         2. 企業の強みや市場での位置づけ
         
+        
         また以下の制約を必ず守ること
         1. 銘柄名から始めて、次の行から銘柄を説明すること
-        2. 銘柄に関連する最近のニュース(トランプ関税、ドル安などの影響)も述べること
-        説明文は全体で200文字程度の簡潔な文章にまとめてください。
+        2. 銘柄に関連する「2025年以降」のニュースを日付とともに述べること。その際【2025年以降のニュース】から始めること。
+        説明文は全体で300文字程度の簡潔な文章にまとめてください。
         """
 
         response = gemini_model.generate_content(prompt)
@@ -696,11 +697,6 @@ def sell(ticker):
     return redirect(url_for('index', ticker=ticker))
 
 
-if __name__ == '__main__':
-    # loggingの基本設定
-    logging.basicConfig(level=logging.INFO)
-    
-    # Note: This app requires a 'portfolio.db' file created by 'init_db.py'
-    # and templates like 'index.html' and 'portfolio.html' to be in a 'templates' folder.
 
+if __name__ == '__main__':
     app.run(debug=True)

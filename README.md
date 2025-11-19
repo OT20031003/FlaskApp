@@ -1,3 +1,9 @@
+# 実行例
+<img src="./images/demo.PNG" width="300" alt="NVIDIA">
+
+## 株の購入時
+<img src="./images/buy_result.PNG" width="300" alt="AAPL">
+
 仮想環境の作成
 ```
 conda create -n stockapp python=3.9

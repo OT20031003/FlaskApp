@@ -19,7 +19,7 @@
         {% if gemini_description %}
         <div class="card mb-4 bg-light border-secondary">
             <div class="card-body">
-                <h5 class="card-title text-secondary">🤖 銘柄概要 (by Gemini)</h5>
+                <h5 class="card-title text-secondary"> 銘柄概要 (by Gemini)</h5>
                 <p class="card-text" style="white-space: pre-wrap;">{{ gemini_description }}</p>
             </div>
         </div>
@@ -49,10 +49,10 @@
                 <h5 class="card-title">取引: {{ chart_data_py.ticker }}</h5>
                 <p class="card-text">現在価格: ${{ chart_data_py.current_price }}</p>
                 
-                <p class="card-text">翌日予測 (LSTM): <span class="badge bg-info">${{ predicted_price_lstm }}</span></p>
+                <p class="card-text">翌日予測 (LSTM): <span class="badge" style="background-color: rgba(255, 99, 132, 1);">${{ predicted_price_lstm }}</span></p>
                 
-                <p class="card-text">翌日予測 (Ridge): <span class="badge bg-warning text-dark">${{ predicted_price_ridge }}</span></p>
-
+                <p class="card-text">翌日予測 (Ridge): <span class="badge text-dark" style="background-color: rgba(255, 159, 64, 1);">${{ predicted_price_ridge }}</span></p>
+                
                 <form method="GET" action="{{ url_for('index', ticker=chart_data_py.ticker) }}" class="row g-2 align-items-center mb-3">
                     <div class="col-auto">
                          <label for="predict_len">予測する日付:</label>
