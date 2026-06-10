@@ -14,7 +14,8 @@ conda activate stockapp
 ```
 必要なライブラリのインストール
 ```
-pip install -r requirements.txt
+conda install pip
+python -m pip install -r requirements.txt
 ```
 環境変数の設定
 ```
