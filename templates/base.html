@@ -9,11 +9,11 @@
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container-fluid">
-            <a class="navbar-brand" href="{{ url_for('search') }}">📈 株取引デモ</a>
+            <a class="navbar-brand" href="{{ request.url_for('search') }}">📈 株取引デモ</a>
             <div class="collapse navbar-collapse">
                 <ul class="navbar-nav me-auto mb-2 mb-lg-0">
                     <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('portfolio_page') }}">ポートフォリオ</a>
+                        <a class="nav-link" href="{{ request.url_for('portfolio_page') }}">ポートフォリオ</a>
                     </li>
                 </ul>
             </div>

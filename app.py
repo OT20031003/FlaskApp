@@ -1,33 +1,54 @@
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 import yfinance as yf
-from flask import Flask, flash, redirect, render_template, request, url_for
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
-from config import AppConfig, DEFAULT_PREDICT_LEN, DEFAULT_TICKER
+from config import APP_SECRET_KEY, DEFAULT_PREDICT_LEN, DEFAULT_TICKER
 from predictors import predict_with_lstm, predict_with_ridge
 from services import get_db_connection, get_gemini_description, get_stock_data
 
 
-app = Flask(__name__)
-app.config.from_object(AppConfig)
+BASE_DIR = Path(__file__).resolve().parent
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+app = FastAPI()
+app.add_middleware(SessionMiddleware, secret_key=APP_SECRET_KEY)
 
 
-@app.route("/")
+def add_flash_message(request: Request, message: str, category: str) -> None:
+    flashes = request.session.get("_flashes", [])
+    flashes.append({"category": category, "message": message})
+    request.session["_flashes"] = flashes
+
+
+def pop_flash_messages(request: Request) -> list[dict[str, str]]:
+    return request.session.pop("_flashes", [])
+
+
+@app.get("/", name="search")
 def search():
     """Homepage, redirects to a default stock (e.g., AAPL)."""
-    return redirect(url_for("index", ticker=DEFAULT_TICKER))
+    return RedirectResponse(
+        url=f"/stock/{DEFAULT_TICKER}",
+        status_code=303,
+    )
 
 
-@app.route("/stock/<ticker>")
-def index(ticker):
+@app.get("/stock/{ticker}", response_class=HTMLResponse, name="index")
+def index(request: Request, ticker: str, predict_len: Optional[str] = None):
     """Main page displaying the stock chart, info, and prediction."""
     stock_ticker = ticker.upper()
     stock, current_price = get_stock_data(stock_ticker)
     if stock is None:
-        flash(f'Ticker "{stock_ticker}" not found.', "danger")
-        return redirect(url_for("search"))
+        add_flash_message(request, f'Ticker "{stock_ticker}" not found.', "danger")
+        return RedirectResponse(url="/", status_code=303)
 
     stock_info = stock.info
     gemini_description = get_gemini_description(stock_ticker, stock_info)
@@ -61,12 +82,12 @@ def index(ticker):
     df = stock.history(period="1y")
 
     try:
-        predict_len = int(request.args.get("predict_len", DEFAULT_PREDICT_LEN))
+        predict_len_value = int(predict_len or DEFAULT_PREDICT_LEN)
     except (ValueError, TypeError):
-        predict_len = DEFAULT_PREDICT_LEN
+        predict_len_value = DEFAULT_PREDICT_LEN
 
-    lstm_prediction_series = predict_with_lstm(df, predict_len=predict_len)
-    ridge_prediction_series = predict_with_ridge(df, predict_len=predict_len)
+    lstm_prediction_series = predict_with_lstm(df, predict_len=predict_len_value)
+    ridge_prediction_series = predict_with_ridge(df, predict_len=predict_len_value)
 
     predicted_price_lstm_val = (
         lstm_prediction_series.iloc[0] if not lstm_prediction_series.empty else current_price
@@ -83,7 +104,7 @@ def index(ticker):
         last_date_for_label = df.index[-1]
         prediction_labels = pd.date_range(
             start=last_date_for_label + pd.Timedelta(days=1),
-            periods=predict_len,
+            periods=predict_len_value,
             freq="B",
         ).strftime("%Y-%m-%d").tolist()
 
@@ -111,22 +132,28 @@ def index(ticker):
         round(predicted_price_ridge_val, 2) if predicted_price_ridge_val is not None else "N/A"
     )
 
-    return render_template(
-        "index.html",
-        chart_data_py=chart_data,
-        chart_data_json=json.dumps(chart_data),
-        portfolio=portfolio,
-        holdings=holdings_with_value,
-        predicted_price_lstm=predicted_price_lstm_rounded,
-        predicted_price_ridge=predicted_price_ridge_rounded,
-        model_type="both",
-        gemini_description=gemini_description,
-        company_name=company_name,
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "request": request,
+            "chart_data_py": chart_data,
+            "chart_data_json": json.dumps(chart_data),
+            "portfolio": portfolio,
+            "holdings": holdings_with_value,
+            "predicted_price_lstm": predicted_price_lstm_rounded,
+            "predicted_price_ridge": predicted_price_ridge_rounded,
+            "model_type": "both",
+            "gemini_description": gemini_description,
+            "company_name": company_name,
+            "flash_messages": pop_flash_messages(request),
+            "predict_len": predict_len_value,
+        },
     )
 
 
-@app.route("/portfolio")
-def portfolio_page():
+@app.get("/portfolio", response_class=HTMLResponse, name="portfolio_page")
+def portfolio_page(request: Request):
     """Displays the historical asset value chart."""
     conn = get_db_connection()
     transactions = conn.execute("SELECT * FROM transactions ORDER BY timestamp ASC").fetchall()
@@ -134,7 +161,15 @@ def portfolio_page():
     conn.close()
 
     if not transactions:
-        return render_template("portfolio.html", chart_data=None)
+        return templates.TemplateResponse(
+            request=request,
+            name="portfolio.html",
+            context={
+                "request": request,
+                "chart_data": None,
+                "flash_messages": pop_flash_messages(request),
+            },
+        )
 
     start_date = datetime.strptime(transactions[0]["timestamp"].split(" ")[0], "%Y-%m-%d").date()
     end_date = datetime.now().date()
@@ -198,25 +233,33 @@ def portfolio_page():
             "data": asset_history,
         }
     )
-    return render_template("portfolio.html", chart_data=chart_data)
+    return templates.TemplateResponse(
+        request=request,
+        name="portfolio.html",
+        context={
+            "request": request,
+            "chart_data": chart_data,
+            "flash_messages": pop_flash_messages(request),
+        },
+    )
 
 
-@app.route("/buy/<ticker>", methods=["POST"])
-def buy(ticker):
+@app.post("/buy/{ticker}", name="buy")
+def buy(request: Request, ticker: str, shares: str = Form(...)):
     """Processes a stock purchase."""
     try:
-        shares_to_buy = int(request.form["shares"])
+        shares_to_buy = int(shares)
         if shares_to_buy <= 0:
-            flash("Please enter a positive number of shares.", "danger")
-            return redirect(url_for("index", ticker=ticker))
-    except ValueError:
-        flash("Invalid number of shares.", "danger")
-        return redirect(url_for("index", ticker=ticker))
+            add_flash_message(request, "Please enter a positive number of shares.", "danger")
+            return RedirectResponse(url=f"/stock/{ticker}", status_code=303)
+    except (TypeError, ValueError):
+        add_flash_message(request, "Invalid number of shares.", "danger")
+        return RedirectResponse(url=f"/stock/{ticker}", status_code=303)
 
     _, current_price = get_stock_data(ticker)
     if not current_price:
-        flash(f"Could not retrieve price for {ticker}.", "danger")
-        return redirect(url_for("index", ticker=ticker))
+        add_flash_message(request, f"Could not retrieve price for {ticker}.", "danger")
+        return RedirectResponse(url=f"/stock/{ticker}", status_code=303)
 
     cost = shares_to_buy * current_price
     conn = get_db_connection()
@@ -236,30 +279,30 @@ def buy(ticker):
             (ticker, shares_to_buy, current_price, "BUY"),
         )
         conn.commit()
-        flash(f"Successfully bought {shares_to_buy} shares of {ticker}.", "success")
+        add_flash_message(request, f"Successfully bought {shares_to_buy} shares of {ticker}.", "success")
     else:
-        flash("Insufficient balance.", "danger")
+        add_flash_message(request, "Insufficient balance.", "danger")
 
     conn.close()
-    return redirect(url_for("index", ticker=ticker))
+    return RedirectResponse(url=f"/stock/{ticker}", status_code=303)
 
 
-@app.route("/sell/<ticker>", methods=["POST"])
-def sell(ticker):
+@app.post("/sell/{ticker}", name="sell")
+def sell(request: Request, ticker: str, shares: str = Form(...)):
     """Processes a stock sale."""
     try:
-        shares_to_sell = int(request.form["shares"])
+        shares_to_sell = int(shares)
         if shares_to_sell <= 0:
-            flash("Please enter a positive number of shares.", "danger")
-            return redirect(url_for("index", ticker=ticker))
-    except ValueError:
-        flash("Invalid number of shares.", "danger")
-        return redirect(url_for("index", ticker=ticker))
+            add_flash_message(request, "Please enter a positive number of shares.", "danger")
+            return RedirectResponse(url=f"/stock/{ticker}", status_code=303)
+    except (TypeError, ValueError):
+        add_flash_message(request, "Invalid number of shares.", "danger")
+        return RedirectResponse(url=f"/stock/{ticker}", status_code=303)
 
     _, current_price = get_stock_data(ticker)
     if not current_price:
-        flash(f"Could not retrieve price for {ticker}.", "danger")
-        return redirect(url_for("index", ticker=ticker))
+        add_flash_message(request, f"Could not retrieve price for {ticker}.", "danger")
+        return RedirectResponse(url=f"/stock/{ticker}", status_code=303)
 
     conn = get_db_connection()
     holding = conn.execute("SELECT * FROM holdings WHERE ticker = ?", (ticker,)).fetchone()
@@ -280,13 +323,15 @@ def sell(ticker):
             (ticker, shares_to_sell, current_price, "SELL"),
         )
         conn.commit()
-        flash(f"Successfully sold {shares_to_sell} shares of {ticker}.", "success")
+        add_flash_message(request, f"Successfully sold {shares_to_sell} shares of {ticker}.", "success")
     else:
-        flash("You do not own enough shares to sell.", "danger")
+        add_flash_message(request, "You do not own enough shares to sell.", "danger")
 
     conn.close()
-    return redirect(url_for("index", ticker=ticker))
+    return RedirectResponse(url=f"/stock/{ticker}", status_code=303)
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    import uvicorn
+
+    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)

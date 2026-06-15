@@ -21,6 +21,10 @@ python -m pip install -r requirements.txt
 ```
 export GEMINI_API_KEY="YOUR_GEMINI_API"
 ```
+アプリの起動
+```
+uvicorn app:app --reload
+```
 仮想環境の無効化
 ```
 conda deactivate

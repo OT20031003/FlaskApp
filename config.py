@@ -1,9 +1,10 @@
 import os
 
 
-class AppConfig:
-    SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "a_very_secret_and_complex_key_12345")
-
+APP_SECRET_KEY = os.environ.get(
+    "APP_SECRET_KEY",
+    os.environ.get("FLASK_SECRET_KEY", "a_very_secret_and_complex_key_12345"),
+)
 
 DATABASE_PATH = os.environ.get("PORTFOLIO_DB_PATH", "portfolio.db")
 DEFAULT_TICKER = "AAPL"

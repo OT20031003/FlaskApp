@@ -1,6 +1,9 @@
 torch
 torchvision 
-flask
+fastapi
+uvicorn
+python-multipart
+jinja2
 yfinance 
 pandas
 scikit-learn
