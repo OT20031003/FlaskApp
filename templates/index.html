@@ -50,19 +50,40 @@
                 <p class="card-text">翌日予測 (リターンLSTM): <span id="predictedPriceLstm" class="badge" style="background-color: rgba(255, 99, 132, 1);">{{ predicted_price_lstm }}</span></p>
                 
                 <p class="card-text">翌日予測 (Ridge): <span id="predictedPriceRidge" class="badge text-dark" style="background-color: rgba(255, 159, 64, 1);">{{ predicted_price_ridge }}</span></p>
+
+                <div class="border rounded p-3 mb-3 bg-light">
+                    <h6 class="mb-2">方向予測 (LightGBM)</h6>
+                    <p class="card-text mb-2">判定: <span id="directionPrediction" class="badge bg-secondary">N/A</span></p>
+                    <p class="card-text mb-1">上昇確率: <strong id="directionProbability">N/A</strong></p>
+                    <p class="card-text mb-1">テスト精度: <strong id="directionAccuracy">N/A</strong></p>
+                    <p class="card-text mb-0">シグナル: <strong id="directionSignal">N/A</strong></p>
+                </div>
                 
-                <form id="predictionForm" class="row g-2 align-items-center mb-3">
+                <form id="pricePredictionForm" class="row g-2 align-items-center mb-2">
                     <div class="col-auto">
-                         <label for="predict_len">予測する日付:</label>
+                         <label for="predict_len_price">価格予測する日付:</label>
                     </div>
                     <div class="col-auto">
-                        <input type="number" id="predict_len" name="predict_len" class="form-control" value="{{ predict_len }}" min="1">
+                        <input type="number" id="predict_len_price" name="predict_len" class="form-control" value="{{ predict_len }}" min="1">
                     </div>
                     <div class="col-auto">
-                        <button id="predictButton" type="submit" class="btn btn-primary btn-sm">予測</button>
+                        <button id="pricePredictButton" type="submit" class="btn btn-primary btn-sm">価格予測</button>
                     </div>
                 </form>
-                <div id="predictionError" class="alert alert-danger d-none" role="alert"></div>
+                <div id="pricePredictionError" class="alert alert-danger d-none mb-3" role="alert"></div>
+
+                <form id="directionPredictionForm" class="row g-2 align-items-center mb-3">
+                    <div class="col-auto">
+                         <label for="predict_len_direction">方向予測する日付:</label>
+                    </div>
+                    <div class="col-auto">
+                        <input type="number" id="predict_len_direction" name="predict_len" class="form-control" value="{{ predict_len }}" min="1">
+                    </div>
+                    <div class="col-auto">
+                        <button id="directionPredictButton" type="submit" class="btn btn-outline-primary btn-sm">方向予測</button>
+                    </div>
+                </form>
+                <div id="directionPredictionError" class="alert alert-danger d-none" role="alert"></div>
                 
                 <form action="{{ request.url_for('buy', ticker=chart_data_py.ticker) }}" method="post" class="mb-2">
                     <div class="input-group">
@@ -115,12 +136,21 @@
 
     let chartData = JSON.parse('{{ chart_data_json | safe }}');
     const predictionApiUrl = "{{ request.url_for('predict_stock', ticker=chart_data_py.ticker) }}";
-    const predictionForm = document.getElementById('predictionForm');
-    const predictLenInput = document.getElementById('predict_len');
-    const predictButton = document.getElementById('predictButton');
-    const predictionError = document.getElementById('predictionError');
+    const directionApiUrl = "{{ request.url_for('predict_stock_direction', ticker=chart_data_py.ticker) }}";
+    const pricePredictionForm = document.getElementById('pricePredictionForm');
+    const directionPredictionForm = document.getElementById('directionPredictionForm');
+    const pricePredictLenInput = document.getElementById('predict_len_price');
+    const directionPredictLenInput = document.getElementById('predict_len_direction');
+    const pricePredictButton = document.getElementById('pricePredictButton');
+    const directionPredictButton = document.getElementById('directionPredictButton');
+    const pricePredictionError = document.getElementById('pricePredictionError');
+    const directionPredictionError = document.getElementById('directionPredictionError');
     const predictedPriceLstm = document.getElementById('predictedPriceLstm');
     const predictedPriceRidge = document.getElementById('predictedPriceRidge');
+    const directionPrediction = document.getElementById('directionPrediction');
+    const directionProbability = document.getElementById('directionProbability');
+    const directionAccuracy = document.getElementById('directionAccuracy');
+    const directionSignal = document.getElementById('directionSignal');
     const ctx = document.getElementById('stockChart').getContext('2d');
     const myChart = new Chart(ctx, {
         type: 'line', 
@@ -177,6 +207,58 @@
         return value === 'N/A' ? 'N/A' : `$${value}`;
     }
 
+    function formatPercent(value) {
+        if (value === null || value === undefined || value === 'N/A') {
+            return 'N/A';
+        }
+        return `${(Number(value) * 100).toFixed(2)}%`;
+    }
+
+    function getDirectionBadgeClass(direction) {
+        if (direction === 'UP') {
+            return 'bg-success';
+        }
+        if (direction === 'DOWN') {
+            return 'bg-danger';
+        }
+        return 'bg-secondary';
+    }
+
+    function updateDirectionView(directionPayload) {
+        const predictedDirection = directionPayload.predicted_direction || 'NEUTRAL';
+        const accuracy = directionPayload.metrics && directionPayload.metrics.accuracy !== undefined
+            ? directionPayload.metrics.accuracy
+            : 'N/A';
+
+        directionPrediction.className = `badge ${getDirectionBadgeClass(predictedDirection)}`;
+        directionPrediction.textContent = predictedDirection === 'UP'
+            ? '上昇'
+            : predictedDirection === 'DOWN'
+                ? '下降'
+                : '中立';
+        directionProbability.textContent = formatPercent(directionPayload.probability_up);
+        directionAccuracy.textContent = formatPercent(accuracy);
+        directionSignal.textContent = directionPayload.signal || 'N/A';
+    }
+
+    async function fetchJsonPayload(url, defaultErrorMessage) {
+        const response = await fetch(url);
+        const rawResponse = await response.text();
+        let payload = null;
+
+        try {
+            payload = JSON.parse(rawResponse);
+        } catch (parseError) {
+            throw new Error(rawResponse || defaultErrorMessage);
+        }
+
+        if (!response.ok) {
+            throw new Error(payload.error || defaultErrorMessage);
+        }
+
+        return payload;
+    }
+
     function updatePredictionView(nextChartData, lstmPrice, ridgePrice) {
         chartData = nextChartData;
         myChart.data.labels = chartData.labels;
@@ -189,30 +271,21 @@
         predictedPriceRidge.textContent = formatPredictionPrice(ridgePrice);
     }
 
-    predictionForm.addEventListener('submit', async function(e) {
+    pricePredictionForm.addEventListener('submit', async function(e) {
         e.preventDefault();
-        predictionError.classList.add('d-none');
-        predictionError.textContent = '';
-        predictButton.disabled = true;
-        predictButton.textContent = '予測中...';
+        pricePredictionError.classList.add('d-none');
+        pricePredictionError.textContent = '';
+        pricePredictButton.disabled = true;
+        pricePredictButton.textContent = '予測中...';
 
         try {
             const params = new URLSearchParams({
-                predict_len: predictLenInput.value
+                predict_len: pricePredictLenInput.value
             });
-            const response = await fetch(`${predictionApiUrl}?${params.toString()}`);
-            const rawResponse = await response.text();
-            let payload = null;
-
-            try {
-                payload = JSON.parse(rawResponse);
-            } catch (parseError) {
-                throw new Error(rawResponse || '予測の取得に失敗しました。');
-            }
-
-            if (!response.ok) {
-                throw new Error(payload.error || '予測の取得に失敗しました。');
-            }
+            const payload = await fetchJsonPayload(
+                `${predictionApiUrl}?${params.toString()}`,
+                '価格予測の取得に失敗しました。'
+            );
 
             updatePredictionView(
                 payload.chart_data,
@@ -220,11 +293,37 @@
                 payload.predicted_price_ridge
             );
         } catch (error) {
-            predictionError.textContent = error.message;
-            predictionError.classList.remove('d-none');
+            pricePredictionError.textContent = error.message;
+            pricePredictionError.classList.remove('d-none');
         } finally {
-            predictButton.disabled = false;
-            predictButton.textContent = '予測';
+            pricePredictButton.disabled = false;
+            pricePredictButton.textContent = '価格予測';
+        }
+    });
+
+    directionPredictionForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        directionPredictionError.classList.add('d-none');
+        directionPredictionError.textContent = '';
+        directionPredictButton.disabled = true;
+        directionPredictButton.textContent = '予測中...';
+
+        try {
+            const params = new URLSearchParams({
+                predict_len: directionPredictLenInput.value
+            });
+            const payload = await fetchJsonPayload(
+                `${directionApiUrl}?${params.toString()}`,
+                '方向予測の取得に失敗しました。'
+            );
+
+            updateDirectionView(payload);
+        } catch (error) {
+            directionPredictionError.textContent = error.message;
+            directionPredictionError.classList.remove('d-none');
+        } finally {
+            directionPredictButton.disabled = false;
+            directionPredictButton.textContent = '方向予測';
         }
     });
 </script>

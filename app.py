@@ -12,7 +12,11 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from config import APP_SECRET_KEY, DEFAULT_PREDICT_LEN, DEFAULT_TICKER
-from predictors import predict_with_return_lstm, predict_with_ridge
+from predictors import (
+    predict_direction_with_lgbm,
+    predict_with_return_lstm,
+    predict_with_ridge,
+)
 from services import get_db_connection, get_gemini_description, get_stock_data
 
 
@@ -237,6 +241,32 @@ def predict_stock(ticker: str, predict_len: Optional[str] = None):
         return JSONResponse(
             status_code=500,
             content={"error": f"予測の生成に失敗しました: {exc}"},
+        )
+
+
+@app.get("/api/stock/{ticker}/direction", name="predict_stock_direction")
+def predict_stock_direction(ticker: str, predict_len: Optional[str] = None):
+    stock_ticker = ticker.upper()
+
+    try:
+        stock, _ = get_stock_data(stock_ticker)
+        if stock is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f'Ticker "{stock_ticker}" not found.'},
+            )
+
+        predict_len_value = parse_predict_len(predict_len)
+        df = stock.history(period="2y")
+        direction_response = predict_direction_with_lgbm(
+            df,
+            predict_len=predict_len_value,
+        )
+        return JSONResponse(content=sanitize_for_json(direction_response))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"方向予測の生成に失敗しました: {exc}"},
         )
 
 

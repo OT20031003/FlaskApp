@@ -36,3 +36,12 @@ RIDGE_CONFIG = {
     "alpha": 1.0,
     "moving_windows": (5, 10, 20),
 }
+
+DIRECTION_CONFIG = {
+    "train_split": 0.8,
+    "target_return_threshold": 0.0,
+    "buy_probability_threshold": 0.60,
+    "sell_probability_threshold": 0.40,
+    "min_samples": 120,
+    "random_state": 42,
+}
