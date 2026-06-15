@@ -21,7 +21,6 @@ GEMINI_SAFETY_SETTINGS = [
 
 LSTM_CONFIG = {
     "train_split": 0.7,
-    "feature_range": (-1, 1),
     "past_len": 30,
     "batch_size": 32,
     "hidden_size": 128,

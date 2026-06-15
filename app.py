@@ -12,7 +12,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from config import APP_SECRET_KEY, DEFAULT_PREDICT_LEN, DEFAULT_TICKER
-from predictors import predict_with_lstm, predict_with_ridge
+from predictors import predict_with_return_lstm, predict_with_ridge
 from services import get_db_connection, get_gemini_description, get_stock_data
 
 
@@ -61,7 +61,7 @@ def build_prediction_response(
     df: pd.DataFrame,
     predict_len: int,
 ) -> dict:
-    lstm_prediction_series = predict_with_lstm(df, predict_len=predict_len)
+    lstm_prediction_series = predict_with_return_lstm(df, predict_len=predict_len)
     ridge_prediction_series = predict_with_ridge(df, predict_len=predict_len)
 
     predicted_price_lstm_val = (
