@@ -1,4 +1,5 @@
 import json
+import math
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -6,7 +7,7 @@ from typing import Optional
 import pandas as pd
 import yfinance as yf
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -32,6 +33,113 @@ def pop_flash_messages(request: Request) -> list[dict[str, str]]:
     return request.session.pop("_flashes", [])
 
 
+def parse_predict_len(predict_len: Optional[str]) -> int:
+    try:
+        return max(1, int(predict_len or DEFAULT_PREDICT_LEN))
+    except (ValueError, TypeError):
+        return DEFAULT_PREDICT_LEN
+
+
+def build_chart_data(stock_ticker: str, current_price: float, df: pd.DataFrame) -> dict:
+    labels = df.index.strftime("%Y-%m-%d").tolist()
+    price_data = df["Close"].tolist()
+    empty_prediction_data = [None] * len(labels)
+
+    return {
+        "labels": labels,
+        "data": price_data,
+        "prediction_data_lstm": empty_prediction_data.copy(),
+        "prediction_data_ridge": empty_prediction_data.copy(),
+        "ticker": stock_ticker,
+        "current_price": round(current_price, 2),
+    }
+
+
+def build_prediction_response(
+    stock_ticker: str,
+    current_price: float,
+    df: pd.DataFrame,
+    predict_len: int,
+) -> dict:
+    lstm_prediction_series = predict_with_lstm(df, predict_len=predict_len)
+    ridge_prediction_series = predict_with_ridge(df, predict_len=predict_len)
+
+    predicted_price_lstm_val = (
+        lstm_prediction_series.iloc[0] if not lstm_prediction_series.empty else current_price
+    )
+    predicted_price_ridge_val = (
+        ridge_prediction_series.iloc[0] if not ridge_prediction_series.empty else current_price
+    )
+
+    if not lstm_prediction_series.empty:
+        prediction_labels = lstm_prediction_series.index.strftime("%Y-%m-%d").tolist()
+    elif not ridge_prediction_series.empty:
+        prediction_labels = ridge_prediction_series.index.strftime("%Y-%m-%d").tolist()
+    else:
+        last_date_for_label = df.index[-1] if not df.empty else pd.Timestamp.today().normalize()
+        prediction_labels = pd.date_range(
+            start=last_date_for_label + pd.Timedelta(days=1),
+            periods=predict_len,
+            freq="B",
+        ).strftime("%Y-%m-%d").tolist()
+
+    prediction_data_lstm = lstm_prediction_series.tolist()
+    prediction_data_ridge = ridge_prediction_series.tolist()
+    historical_labels = df.index.strftime("%Y-%m-%d").tolist()
+    historical_data = df["Close"].tolist()
+    if historical_data:
+        prediction_data_points_lstm = [None] * (len(historical_data) - 1) + [
+            historical_data[-1]
+        ] + prediction_data_lstm
+        prediction_data_points_ridge = [None] * (len(historical_data) - 1) + [
+            historical_data[-1]
+        ] + prediction_data_ridge
+    else:
+        prediction_data_points_lstm = prediction_data_lstm
+        prediction_data_points_ridge = prediction_data_ridge
+
+    chart_data = {
+        "labels": historical_labels + prediction_labels,
+        "data": historical_data + [None] * len(prediction_labels),
+        "prediction_data_lstm": prediction_data_points_lstm,
+        "prediction_data_ridge": prediction_data_points_ridge,
+        "ticker": stock_ticker,
+        "current_price": round(current_price, 2),
+    }
+
+    return {
+        "chart_data": chart_data,
+        "predicted_price_lstm": (
+            round(predicted_price_lstm_val, 2)
+            if predicted_price_lstm_val is not None
+            else "N/A"
+        ),
+        "predicted_price_ridge": (
+            round(predicted_price_ridge_val, 2)
+            if predicted_price_ridge_val is not None
+            else "N/A"
+        ),
+        "predict_len": predict_len,
+    }
+
+
+def sanitize_for_json(value):
+    if isinstance(value, dict):
+        return {key: sanitize_for_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_for_json(item) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_for_json(item) for item in value]
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            return sanitize_for_json(value.item())
+        except (ValueError, TypeError):
+            pass
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return value
+
+
 @app.get("/", name="search")
 def search():
     """Homepage, redirects to a default stock (e.g., AAPL)."""
@@ -43,7 +151,7 @@ def search():
 
 @app.get("/stock/{ticker}", response_class=HTMLResponse, name="index")
 def index(request: Request, ticker: str, predict_len: Optional[str] = None):
-    """Main page displaying the stock chart, info, and prediction."""
+    """Main page displaying the stock chart and stock info."""
     stock_ticker = ticker.upper()
     stock, current_price = get_stock_data(stock_ticker)
     if stock is None:
@@ -80,57 +188,8 @@ def index(request: Request, ticker: str, predict_len: Optional[str] = None):
     }
 
     df = stock.history(period="1y")
-
-    try:
-        predict_len_value = int(predict_len or DEFAULT_PREDICT_LEN)
-    except (ValueError, TypeError):
-        predict_len_value = DEFAULT_PREDICT_LEN
-
-    lstm_prediction_series = predict_with_lstm(df, predict_len=predict_len_value)
-    ridge_prediction_series = predict_with_ridge(df, predict_len=predict_len_value)
-
-    predicted_price_lstm_val = (
-        lstm_prediction_series.iloc[0] if not lstm_prediction_series.empty else current_price
-    )
-    predicted_price_ridge_val = (
-        ridge_prediction_series.iloc[0] if not ridge_prediction_series.empty else current_price
-    )
-
-    if not lstm_prediction_series.empty:
-        prediction_labels = lstm_prediction_series.index.strftime("%Y-%m-%d").tolist()
-    elif not ridge_prediction_series.empty:
-        prediction_labels = ridge_prediction_series.index.strftime("%Y-%m-%d").tolist()
-    else:
-        last_date_for_label = df.index[-1]
-        prediction_labels = pd.date_range(
-            start=last_date_for_label + pd.Timedelta(days=1),
-            periods=predict_len_value,
-            freq="B",
-        ).strftime("%Y-%m-%d").tolist()
-
-    prediction_data_lstm = lstm_prediction_series.tolist()
-    prediction_data_ridge = ridge_prediction_series.tolist()
-    prediction_data_points_lstm = [None] * (len(df) - 1) + [df["Close"].iloc[-1]] + prediction_data_lstm
-    prediction_data_points_ridge = [None] * (len(df) - 1) + [df["Close"].iloc[-1]] + prediction_data_ridge
-
-    labels = df.index.strftime("%Y-%m-%d").tolist() + prediction_labels
-    data = df["Close"].tolist() + [None] * len(prediction_labels)
-
-    chart_data = {
-        "labels": labels,
-        "data": data,
-        "prediction_data_lstm": prediction_data_points_lstm,
-        "prediction_data_ridge": prediction_data_points_ridge,
-        "ticker": stock_ticker,
-        "current_price": round(current_price, 2),
-    }
-
-    predicted_price_lstm_rounded = (
-        round(predicted_price_lstm_val, 2) if predicted_price_lstm_val is not None else "N/A"
-    )
-    predicted_price_ridge_rounded = (
-        round(predicted_price_ridge_val, 2) if predicted_price_ridge_val is not None else "N/A"
-    )
+    predict_len_value = parse_predict_len(predict_len)
+    chart_data = build_chart_data(stock_ticker, current_price, df)
 
     return templates.TemplateResponse(
         request=request,
@@ -141,8 +200,8 @@ def index(request: Request, ticker: str, predict_len: Optional[str] = None):
             "chart_data_json": json.dumps(chart_data),
             "portfolio": portfolio,
             "holdings": holdings_with_value,
-            "predicted_price_lstm": predicted_price_lstm_rounded,
-            "predicted_price_ridge": predicted_price_ridge_rounded,
+            "predicted_price_lstm": "N/A",
+            "predicted_price_ridge": "N/A",
             "model_type": "both",
             "gemini_description": gemini_description,
             "company_name": company_name,
@@ -150,6 +209,35 @@ def index(request: Request, ticker: str, predict_len: Optional[str] = None):
             "predict_len": predict_len_value,
         },
     )
+
+
+@app.get("/api/stock/{ticker}/predict", name="predict_stock")
+def predict_stock(ticker: str, predict_len: Optional[str] = None):
+    stock_ticker = ticker.upper()
+
+    try:
+        stock, current_price = get_stock_data(stock_ticker)
+        if stock is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f'Ticker "{stock_ticker}" not found.'},
+            )
+
+        predict_len_value = parse_predict_len(predict_len)
+        df = stock.history(period="1y")
+        prediction_response = build_prediction_response(
+            stock_ticker,
+            current_price,
+            df,
+            predict_len_value,
+        )
+
+        return JSONResponse(content=sanitize_for_json(prediction_response))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"予測の生成に失敗しました: {exc}"},
+        )
 
 
 @app.get("/portfolio", response_class=HTMLResponse, name="portfolio_page")

@@ -47,11 +47,11 @@
                 <h5 class="card-title">取引: {{ chart_data_py.ticker }}</h5>
                 <p class="card-text">現在価格: ${{ chart_data_py.current_price }}</p>
                 
-                <p class="card-text">翌日予測 (LSTM): <span class="badge" style="background-color: rgba(255, 99, 132, 1);">${{ predicted_price_lstm }}</span></p>
+                <p class="card-text">翌日予測 (LSTM): <span id="predictedPriceLstm" class="badge" style="background-color: rgba(255, 99, 132, 1);">{{ predicted_price_lstm }}</span></p>
                 
-                <p class="card-text">翌日予測 (Ridge): <span class="badge text-dark" style="background-color: rgba(255, 159, 64, 1);">${{ predicted_price_ridge }}</span></p>
+                <p class="card-text">翌日予測 (Ridge): <span id="predictedPriceRidge" class="badge text-dark" style="background-color: rgba(255, 159, 64, 1);">{{ predicted_price_ridge }}</span></p>
                 
-                <form method="GET" action="{{ request.url_for('index', ticker=chart_data_py.ticker) }}" class="row g-2 align-items-center mb-3">
+                <form id="predictionForm" class="row g-2 align-items-center mb-3">
                     <div class="col-auto">
                          <label for="predict_len">予測する日付:</label>
                     </div>
@@ -59,9 +59,10 @@
                         <input type="number" id="predict_len" name="predict_len" class="form-control" value="{{ predict_len }}" min="1">
                     </div>
                     <div class="col-auto">
-                        <button type="submit" class="btn btn-primary btn-sm">予測</button>
+                        <button id="predictButton" type="submit" class="btn btn-primary btn-sm">予測</button>
                     </div>
                 </form>
+                <div id="predictionError" class="alert alert-danger d-none" role="alert"></div>
                 
                 <form action="{{ request.url_for('buy', ticker=chart_data_py.ticker) }}" method="post" class="mb-2">
                     <div class="input-group">
@@ -112,7 +113,14 @@
         window.location.href = '/stock/' + ticker;
     });
 
-    const chartData = JSON.parse('{{ chart_data_json | safe }}');
+    let chartData = JSON.parse('{{ chart_data_json | safe }}');
+    const predictionApiUrl = "{{ request.url_for('predict_stock', ticker=chart_data_py.ticker) }}";
+    const predictionForm = document.getElementById('predictionForm');
+    const predictLenInput = document.getElementById('predict_len');
+    const predictButton = document.getElementById('predictButton');
+    const predictionError = document.getElementById('predictionError');
+    const predictedPriceLstm = document.getElementById('predictedPriceLstm');
+    const predictedPriceRidge = document.getElementById('predictedPriceRidge');
     const ctx = document.getElementById('stockChart').getContext('2d');
     const myChart = new Chart(ctx, {
         type: 'line', 
@@ -162,6 +170,61 @@
                     display: true
                 }
             }
+        }
+    });
+
+    function formatPredictionPrice(value) {
+        return value === 'N/A' ? 'N/A' : `$${value}`;
+    }
+
+    function updatePredictionView(nextChartData, lstmPrice, ridgePrice) {
+        chartData = nextChartData;
+        myChart.data.labels = chartData.labels;
+        myChart.data.datasets[0].data = chartData.data;
+        myChart.data.datasets[1].data = chartData.prediction_data_lstm;
+        myChart.data.datasets[2].data = chartData.prediction_data_ridge;
+        myChart.update();
+
+        predictedPriceLstm.textContent = formatPredictionPrice(lstmPrice);
+        predictedPriceRidge.textContent = formatPredictionPrice(ridgePrice);
+    }
+
+    predictionForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        predictionError.classList.add('d-none');
+        predictionError.textContent = '';
+        predictButton.disabled = true;
+        predictButton.textContent = '予測中...';
+
+        try {
+            const params = new URLSearchParams({
+                predict_len: predictLenInput.value
+            });
+            const response = await fetch(`${predictionApiUrl}?${params.toString()}`);
+            const rawResponse = await response.text();
+            let payload = null;
+
+            try {
+                payload = JSON.parse(rawResponse);
+            } catch (parseError) {
+                throw new Error(rawResponse || '予測の取得に失敗しました。');
+            }
+
+            if (!response.ok) {
+                throw new Error(payload.error || '予測の取得に失敗しました。');
+            }
+
+            updatePredictionView(
+                payload.chart_data,
+                payload.predicted_price_lstm,
+                payload.predicted_price_ridge
+            );
+        } catch (error) {
+            predictionError.textContent = error.message;
+            predictionError.classList.remove('d-none');
+        } finally {
+            predictButton.disabled = false;
+            predictButton.textContent = '予測';
         }
     });
 </script>
