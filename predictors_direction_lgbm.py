@@ -12,7 +12,7 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-
+from services import get_stock_data
 from config import DIRECTION_CONFIG
 from predictor_utils import direction_fallback, format_last_date
 
@@ -313,3 +313,24 @@ def predict_direction_with_lgbm(
         "metrics": metrics,
         "top_features": top_features,
     }
+
+def  main():
+    ticker = "AAPL"
+    stock_ticker = ticker.upper()
+
+    try:
+        stock, _ = get_stock_data(stock_ticker)
+        if stock is None:
+            print("stock is None")
+            exit()
+        predict_len_value = 10
+        df = stock.history(period="5y")
+        direction_response = predict_direction_with_lgbm(
+            df, 
+            predict_len=predict_len_value,
+        )
+    except Exception as exc:
+        print(exc)
+
+if __name__ == "__main__":
+    main()
