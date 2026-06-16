@@ -315,7 +315,7 @@ def predict_direction_with_lgbm(
     }
 
 def  main():
-    ticker = "AAPL"
+    ticker = "NVDA"
     stock_ticker = ticker.upper()
 
     try:
@@ -324,7 +324,12 @@ def  main():
             print("stock is None")
             exit()
         predict_len_value = 10
+        eps = stock.info.get("trailingEps")  # 実績EPS
+
+
         df = stock.history(period="5y")
+        df["PER"] = df["Close"] / eps
+        print(df["PER"])
         direction_response = predict_direction_with_lgbm(
             df, 
             predict_len=predict_len_value,
