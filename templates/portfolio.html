@@ -1,27 +1,191 @@
 {% extends "base.html" %}
 
-{% block title %}ポートフォリオ推移{% endblock %}
+{% block title %}ポートフォリオ{% endblock %}
 
 {% block content %}
-<h2>資産推移グラフ</h2>
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <div>
+        <h2 class="mb-1">ポートフォリオ</h2>
+        <p class="text-muted mb-0">最終更新: {{ updated_at }}</p>
+    </div>
+    <form action="{{ request.url_for('portfolio_page') }}" method="get">
+        <input type="hidden" name="refresh" value="1">
+        <button type="submit" class="btn btn-primary">最新価格で更新</button>
+    </form>
+</div>
 
-{% if chart_data %}
-    <div class="chart-container mt-4">
-        <canvas id="portfolioChart"></canvas>
-    </div>
-{% else %}
-    <div class="alert alert-info mt-4">
-        まだ取引履歴がありません。取引を行うと、ここに資産の推移が表示されます。
-    </div>
+{% if flash_messages %}
+    {% for flash in flash_messages %}
+        <div class="alert alert-{{ flash.category }} mt-3">{{ flash.message }}</div>
+    {% endfor %}
 {% endif %}
+
+{% if refreshed %}
+    <div class="alert alert-success">全保有銘柄の最新価格で再計算しました。</div>
+{% endif %}
+
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h6 class="text-muted">仮想残高</h6>
+                <h3>${{ "%.2f"|format(portfolio.balance) }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h6 class="text-muted">株式評価額</h6>
+                <h3>${{ "%.2f"|format(portfolio.holdings_value) }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100 border-primary">
+            <div class="card-body">
+                <h6 class="text-muted">総資産</h6>
+                <h3>${{ "%.2f"|format(portfolio.total_asset) }}</h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mb-4">
+    <div class="col-lg-8">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5 class="card-title">資産推移グラフ</h5>
+                {% if chart_data %}
+                    <div class="chart-container mt-4">
+                        <canvas id="portfolioChart"></canvas>
+                    </div>
+                {% else %}
+                    <div class="alert alert-info mt-4 mb-0">
+                        まだ取引履歴がありません。取引を行うと、ここに資産の推移が表示されます。
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5 class="card-title">資産配分</h5>
+                <div class="chart-container mt-4">
+                    <canvas id="allocationChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <h5 class="card-title">保有明細</h5>
+        <div class="table-responsive mt-3">
+            <table class="table table-striped align-middle">
+                <thead>
+                    <tr>
+                        <th>銘柄</th>
+                        <th class="text-end">保有株数</th>
+                        <th class="text-end">現在値</th>
+                        <th class="text-end">取得単価</th>
+                        <th class="text-end">評価額</th>
+                        <th class="text-end">保有割合</th>
+                        <th class="text-end">評価損益</th>
+                        <th class="text-end">前日比</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stock in holdings %}
+                        <tr>
+                            <td><strong>{{ stock.ticker }}</strong></td>
+                            <td class="text-end">{{ stock.shares_display }}株</td>
+                            <td class="text-end">
+                                {% if stock.current_price is not none %}
+                                    ${{ "%.2f"|format(stock.current_price) }}
+                                {% else %}
+                                    N/A
+                                {% endif %}
+                            </td>
+                            <td class="text-end">${{ "%.2f"|format(stock.average_cost) }}</td>
+                            <td class="text-end">${{ "%.2f"|format(stock.market_value) }}</td>
+                            <td class="text-end">{{ "%.2f"|format(stock.holding_ratio) }}%</td>
+                            <td class="text-end {% if stock.unrealized_pl is not none and stock.unrealized_pl > 0 %}text-success{% elif stock.unrealized_pl is not none and stock.unrealized_pl < 0 %}text-danger{% endif %}">
+                                {% if stock.unrealized_pl is not none %}
+                                    ${{ "%.2f"|format(stock.unrealized_pl) }}
+                                    {% if stock.unrealized_pl_pct is not none %}
+                                        ({{ "%.2f"|format(stock.unrealized_pl_pct) }}%)
+                                    {% endif %}
+                                {% else %}
+                                    N/A
+                                {% endif %}
+                            </td>
+                            <td class="text-end {% if stock.day_change_value is not none and stock.day_change_value > 0 %}text-success{% elif stock.day_change_value is not none and stock.day_change_value < 0 %}text-danger{% endif %}">
+                                {% if stock.day_change_value is not none %}
+                                    ${{ "%.2f"|format(stock.day_change_value) }}
+                                    {% if stock.day_change_pct is not none %}
+                                        ({{ "%.2f"|format(stock.day_change_pct) }}%)
+                                    {% endif %}
+                                {% else %}
+                                    N/A
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% else %}
+                        <tr>
+                            <td colspan="8" class="text-center text-muted py-4">保有株はありません。</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
+<script>
+    const allocationData = JSON.parse('{{ pie_chart_data | safe }}');
+    const allocationCtx = document.getElementById('allocationChart').getContext('2d');
+    new Chart(allocationCtx, {
+        type: 'doughnut',
+        data: {
+            labels: allocationData.labels,
+            datasets: [{
+                data: allocationData.data,
+                backgroundColor: [
+                    'rgba(33, 37, 41, 0.9)',
+                    'rgba(54, 162, 235, 0.85)',
+                    'rgba(255, 159, 64, 0.85)',
+                    'rgba(75, 192, 192, 0.85)',
+                    'rgba(255, 99, 132, 0.85)',
+                    'rgba(153, 102, 255, 0.85)',
+                    'rgba(255, 205, 86, 0.85)'
+                ],
+                borderWidth: 1
+            }]
+        },
+        options: {
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            return `${context.label}: $${context.formattedValue}`;
+                        }
+                    }
+                }
+            }
+        }
+    });
+</script>
+
 {% if chart_data %}
 <script>
     const portfolioData = JSON.parse('{{ chart_data | safe }}');
     const ctx = document.getElementById('portfolioChart').getContext('2d');
-    const myChart = new Chart(ctx, {
+    new Chart(ctx, {
         type: 'line',
         data: {
             labels: portfolioData.labels,
@@ -32,7 +196,7 @@
                 backgroundColor: 'rgba(54, 162, 235, 0.2)',
                 borderWidth: 2,
                 fill: true,
-                tension: 0.1
+                tension: 0.15
             }]
         },
         options: {

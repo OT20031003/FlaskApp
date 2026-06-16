@@ -12,14 +12,14 @@ CREATE TABLE user (
 CREATE TABLE holdings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker TEXT NOT NULL,
-    shares INTEGER NOT NULL,
+    shares REAL NOT NULL,
     UNIQUE(ticker) -- 同じ銘柄は一行にまとめる
 );
 
 CREATE TABLE transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker TEXT NOT NULL,
-    shares INTEGER NOT NULL,
+    shares REAL NOT NULL,
     price REAL NOT NULL,
     type TEXT NOT NULL, -- 'BUY' or 'SELL'
     timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
