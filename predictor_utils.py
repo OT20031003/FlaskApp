@@ -40,6 +40,7 @@ def direction_fallback(df: pd.DataFrame, predict_len: int, reason: str) -> dict[
         "last_close": last_close,
         "probability_up": 0.5,
         "probability_down": 0.5,
+        "decision_threshold": 0.5,
         "predicted_direction": "NEUTRAL",
         "signal": "HOLD",
         "target_return_threshold": DIRECTION_CONFIG.get("target_return_threshold", 0.0),

@@ -57,6 +57,21 @@
                     <p class="card-text mb-1">上昇確率: <strong id="directionProbability">N/A</strong></p>
                     <p class="card-text mb-1">テスト精度: <strong id="directionAccuracy">N/A</strong></p>
                     <p class="card-text mb-0">シグナル: <strong id="directionSignal">N/A</strong></p>
+                    <hr>
+                    <h6 class="mb-2">重要特徴量 Top 10</h6>
+                    <div id="directionTopFeaturesEmpty" class="text-muted small">方向予測を実行すると表示されます。</div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped align-middle mb-0 d-none" id="directionTopFeaturesTable">
+                            <thead>
+                                <tr>
+                                    <th scope="col">特徴量</th>
+                                    <th scope="col" class="text-end">Gain比率</th>
+                                    <th scope="col" class="text-end">Split回数</th>
+                                </tr>
+                            </thead>
+                            <tbody id="directionTopFeaturesBody"></tbody>
+                        </table>
+                    </div>
                 </div>
                 
                 <form id="pricePredictionForm" class="row g-2 align-items-center mb-2">
@@ -151,6 +166,9 @@
     const directionProbability = document.getElementById('directionProbability');
     const directionAccuracy = document.getElementById('directionAccuracy');
     const directionSignal = document.getElementById('directionSignal');
+    const directionTopFeaturesEmpty = document.getElementById('directionTopFeaturesEmpty');
+    const directionTopFeaturesTable = document.getElementById('directionTopFeaturesTable');
+    const directionTopFeaturesBody = document.getElementById('directionTopFeaturesBody');
     const ctx = document.getElementById('stockChart').getContext('2d');
     const myChart = new Chart(ctx, {
         type: 'line', 
@@ -224,6 +242,40 @@
         return 'bg-secondary';
     }
 
+    function renderTopFeatures(topFeatures) {
+        directionTopFeaturesBody.innerHTML = '';
+
+        if (!Array.isArray(topFeatures) || topFeatures.length === 0) {
+            directionTopFeaturesTable.classList.add('d-none');
+            directionTopFeaturesEmpty.classList.remove('d-none');
+            directionTopFeaturesEmpty.textContent = '重要特徴量を取得できませんでした。';
+            return;
+        }
+
+        for (const item of topFeatures) {
+            const row = document.createElement('tr');
+
+            const featureCell = document.createElement('td');
+            featureCell.textContent = item.feature || 'N/A';
+
+            const gainShareCell = document.createElement('td');
+            gainShareCell.className = 'text-end';
+            gainShareCell.textContent = formatPercent(item.gain_share);
+
+            const splitCell = document.createElement('td');
+            splitCell.className = 'text-end';
+            splitCell.textContent = item.split_importance ?? 'N/A';
+
+            row.appendChild(featureCell);
+            row.appendChild(gainShareCell);
+            row.appendChild(splitCell);
+            directionTopFeaturesBody.appendChild(row);
+        }
+
+        directionTopFeaturesEmpty.classList.add('d-none');
+        directionTopFeaturesTable.classList.remove('d-none');
+    }
+
     function updateDirectionView(directionPayload) {
         const predictedDirection = directionPayload.predicted_direction || 'NEUTRAL';
         const accuracy = directionPayload.metrics && directionPayload.metrics.accuracy !== undefined
@@ -239,6 +291,7 @@
         directionProbability.textContent = formatPercent(directionPayload.probability_up);
         directionAccuracy.textContent = formatPercent(accuracy);
         directionSignal.textContent = directionPayload.signal || 'N/A';
+        renderTopFeatures(directionPayload.top_features);
     }
 
     async function fetchJsonPayload(url, defaultErrorMessage) {

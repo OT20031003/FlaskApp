@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -27,6 +27,54 @@ def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
+def _score_direction_threshold(
+    y_true: pd.Series,
+    y_prob: np.ndarray,
+    threshold: float,
+    metric_name: str,
+) -> float:
+    y_pred = (y_prob >= threshold).astype(int)
+
+    if metric_name == "f1":
+        return float(f1_score(y_true, y_pred, zero_division=0))
+    if metric_name == "accuracy":
+        return float(accuracy_score(y_true, y_pred))
+    return float(balanced_accuracy_score(y_true, y_pred))
+
+
+def _find_optimal_direction_threshold(
+    y_true: pd.Series,
+    y_prob: np.ndarray,
+    metric_name: str,
+    default_threshold: float = 0.5,
+) -> tuple[float, Optional[float]]:
+    if len(y_true) == 0 or y_true.nunique() < 2:
+        return default_threshold, None
+
+    candidate_thresholds = np.unique(np.round(y_prob, 4))
+    candidate_thresholds = np.concatenate(
+        [
+            np.array([0.01, default_threshold, 0.99]),
+            candidate_thresholds,
+        ]
+    )
+    candidate_thresholds = np.unique(np.clip(candidate_thresholds, 0.01, 0.99))
+
+    best_threshold = default_threshold
+    best_score: Optional[float] = None
+
+    for threshold in candidate_thresholds:
+        score = _score_direction_threshold(y_true, y_prob, float(threshold), metric_name)
+        if best_score is None or score > best_score:
+            best_threshold = float(threshold)
+            best_score = score
+        elif best_score is not None and np.isclose(score, best_score):
+            if abs(float(threshold) - default_threshold) < abs(best_threshold - default_threshold):
+                best_threshold = float(threshold)
+
+    return best_threshold, best_score
+
+
 def _build_direction_features(
     df: pd.DataFrame,
     predict_len: int,
@@ -53,9 +101,6 @@ def _build_direction_features(
     feature_df["ma_gap_20"] = feature_df["Close"] / feature_df["Close"].rolling(20).mean() - 1
     feature_df["ma_gap_60"] = feature_df["Close"] / feature_df["Close"].rolling(60).mean() - 1
     feature_df["ma_gap_120"] = feature_df["Close"] / feature_df["Close"].rolling(120).mean() - 1
-    feature_df["momentum_5"] = feature_df["Close"] / feature_df["Close"].shift(5) - 1
-    feature_df["momentum_20"] = feature_df["Close"] / feature_df["Close"].shift(20) - 1
-    feature_df["momentum_60"] = feature_df["Close"] / feature_df["Close"].shift(60) - 1
 
     feature_cols.extend(
         [
@@ -73,9 +118,6 @@ def _build_direction_features(
             "ma_gap_20",
             "ma_gap_60",
             "ma_gap_120",
-            "momentum_5",
-            "momentum_20",
-            "momentum_60",
         ]
     )
 
@@ -170,7 +212,6 @@ def predict_direction_with_lgbm(
     if len(df) < min_samples:
         return direction_fallback(df, predict_len, "Not enough data for direction classification")
 
-    model_factory = _build_direction_model()
     feature_df, feature_cols = _build_direction_features(df, predict_len)
     if not feature_cols or feature_df.empty:
         return direction_fallback(
@@ -211,6 +252,17 @@ def predict_direction_with_lgbm(
     train_df = training_df.iloc[:train_len].copy()
     test_df = training_df.iloc[train_len:].copy()
 
+    calibration_ratio = DIRECTION_CONFIG.get("threshold_calibration_split", 0.25)
+    threshold_metric = DIRECTION_CONFIG.get("threshold_search_metric", "balanced_accuracy")
+    calibration_len = int(len(train_df) * calibration_ratio)
+
+    fit_df = train_df.copy()
+    calibration_df = train_df.iloc[0:0].copy()
+    threshold_search_enabled = calibration_len > 0 and calibration_len < len(train_df)
+    if threshold_search_enabled:
+        fit_df = train_df.iloc[:-calibration_len].copy()
+        calibration_df = train_df.iloc[-calibration_len:].copy()
+
     x_train = train_df[feature_cols]
     y_train = train_df["target"].astype(int)
     x_test = test_df[feature_cols]
@@ -223,7 +275,29 @@ def predict_direction_with_lgbm(
             "Training data contains only one direction class",
         )
 
-    model = model_factory
+    optimal_threshold = 0.5
+    calibration_score: Optional[float] = None
+    threshold_search_status = "disabled"
+
+    if threshold_search_enabled:
+        y_fit = fit_df["target"].astype(int)
+        y_calibration = calibration_df["target"].astype(int)
+        if y_fit.nunique() >= 2 and y_calibration.nunique() >= 2:
+            threshold_model = _build_direction_model()
+            threshold_model.fit(fit_df[feature_cols], y_fit)
+            calibration_probabilities = threshold_model.predict_proba(calibration_df[feature_cols])[:, 1]
+            optimal_threshold, calibration_score = _find_optimal_direction_threshold(
+                y_calibration,
+                calibration_probabilities,
+                threshold_metric,
+            )
+            threshold_search_status = "ok"
+        else:
+            threshold_search_status = "insufficient_class_variation"
+    else:
+        threshold_search_status = "insufficient_samples"
+
+    model = _build_direction_model()
     model.fit(x_train, y_train)
 
     metrics: dict[str, Any] = {}
@@ -233,7 +307,7 @@ def predict_direction_with_lgbm(
         print("Warning: Test target contains a single class for direction classification.")
     else:
         y_prob = model.predict_proba(x_test)[:, 1]
-        y_pred = (y_prob >= 0.5).astype(int)
+        y_pred = (y_prob >= optimal_threshold).astype(int)
         majority_class = int(y_test.mode().iloc[0])
         baseline_predictions = np.full_like(y_test.to_numpy(), majority_class)
         metrics = {
@@ -249,10 +323,18 @@ def predict_direction_with_lgbm(
                 4,
             ),
             "confusion_matrix": confusion_matrix(y_test, y_pred, labels=[0, 1]).tolist(),
+            "decision_threshold": round(float(optimal_threshold), 4),
+            "threshold_search_metric": threshold_metric,
+            "threshold_search_status": threshold_search_status,
+            "calibration_score": round(float(calibration_score), 4)
+            if calibration_score is not None
+            else None,
         }
 
         print("\n--- Direction LGBM Test Metrics ---")
         print(f"Horizon: {predict_len} business days")
+        print(f"Decision Threshold: {metrics['decision_threshold']:.4f}")
+        print(f"Threshold Metric: {metrics['threshold_search_metric']}")
         print(f"Accuracy: {metrics['accuracy']:.4f}")
         print(f"Balanced Accuracy: {metrics['balanced_accuracy']:.4f}")
         print(f"Precision: {metrics['precision']:.4f}")
@@ -274,25 +356,34 @@ def predict_direction_with_lgbm(
     buy_threshold = DIRECTION_CONFIG.get("buy_probability_threshold", 0.60)
     sell_threshold = DIRECTION_CONFIG.get("sell_probability_threshold", 0.40)
 
+    if prob_up >= optimal_threshold:
+        direction = "UP"
+    else:
+        direction = "DOWN"
+
     if prob_up >= buy_threshold:
         signal = "BUY"
-        direction = "UP"
     elif prob_up <= sell_threshold:
         signal = "SELL"
-        direction = "DOWN"
     else:
         signal = "HOLD"
-        direction = "NEUTRAL"
 
-    importances = model_full.feature_importances_
-    sorted_pairs = sorted(
-        zip(feature_cols, importances),
-        key=lambda item: item[1],
+    split_importances = model_full.feature_importances_
+    gain_importances = model_full.booster_.feature_importance(importance_type="gain")
+    total_gain = float(np.sum(gain_importances))
+    sorted_importances = sorted(
+        zip(feature_cols, split_importances, gain_importances),
+        key=lambda item: item[2],
         reverse=True,
     )
     top_features = [
-        {"feature": feature, "importance": int(importance)}
-        for feature, importance in sorted_pairs[:10]
+        {
+            "feature": feature,
+            "split_importance": int(split_importance),
+            "gain_importance": round(float(gain_importance), 4),
+            "gain_share": round(float(gain_importance) / total_gain, 4) if total_gain > 0 else 0.0,
+        }
+        for feature, split_importance, gain_importance in sorted_importances[:10]
     ]
 
     last_close = float(feature_df["Close"].iloc[-1])
@@ -305,6 +396,7 @@ def predict_direction_with_lgbm(
         "last_close": round(last_close, 4),
         "probability_up": round(prob_up, 4),
         "probability_down": round(prob_down, 4),
+        "decision_threshold": round(float(optimal_threshold), 4),
         "predicted_direction": direction,
         "signal": signal,
         "target_return_threshold": DIRECTION_CONFIG.get("target_return_threshold", 0.0),
@@ -315,7 +407,7 @@ def predict_direction_with_lgbm(
     }
 
 def  main():
-    ticker = "NVDA"
+    ticker = "MU"
     stock_ticker = ticker.upper()
 
     try:
@@ -325,11 +417,12 @@ def  main():
             exit()
         predict_len_value = 10
         eps = stock.info.get("trailingEps")  # 実績EPS
+        print(eps)
 
-
-        df = stock.history(period="5y")
+        df = stock.history(period="1y")
         df["PER"] = df["Close"] / eps
-        print(df["PER"])
+        print(df["Close"].rolling(5).mean())
+        #print(df["PER"])
         direction_response = predict_direction_with_lgbm(
             df, 
             predict_len=predict_len_value,

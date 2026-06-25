@@ -39,6 +39,8 @@ RIDGE_CONFIG = {
 
 DIRECTION_CONFIG = {
     "train_split": 0.8,
+    "threshold_calibration_split": 0.25,
+    "threshold_search_metric": "balanced_accuracy",
     "target_return_threshold": 0.0,
     "buy_probability_threshold": 0.60,
     "sell_probability_threshold": 0.40,
