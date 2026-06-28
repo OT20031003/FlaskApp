@@ -1,3 +1,5 @@
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Iterator, Optional
 
 import numpy as np
@@ -231,6 +233,300 @@ def _summarize_probabilities(y_prob: np.ndarray, threshold: float) -> dict[str, 
     }
 
 
+def _extract_feature_importances(
+    model: Any,
+    feature_cols: list[str],
+    top_n: int = 10,
+) -> list[dict[str, Any]]:
+    split_importances_raw = np.asarray(
+        getattr(model, "feature_importances_", np.zeros(len(feature_cols)))
+    ).reshape(-1)
+    gain_importances_raw = (
+        np.asarray(
+            model.booster_.feature_importance(importance_type="gain"),
+            dtype=float,
+        ).reshape(-1)
+        if hasattr(model, "booster_")
+        else split_importances_raw.astype(float)
+    )
+
+    split_importances = np.zeros(len(feature_cols), dtype=float)
+    gain_importances = np.zeros(len(feature_cols), dtype=float)
+    assign_len = min(len(feature_cols), len(split_importances_raw), len(gain_importances_raw))
+    if assign_len > 0:
+        split_importances[:assign_len] = split_importances_raw[:assign_len]
+        gain_importances[:assign_len] = gain_importances_raw[:assign_len]
+
+    total_gain = float(np.sum(gain_importances))
+    sorted_importances = sorted(
+        zip(feature_cols, split_importances, gain_importances),
+        key=lambda item: item[2],
+        reverse=True,
+    )
+    return [
+        {
+            "feature": feature,
+            "split_importance": int(split_importance),
+            "gain_importance": round(float(gain_importance), 4),
+            "gain_share": (
+                round(float(gain_importance) / total_gain, 4) if total_gain > 0 else 0.0
+            ),
+        }
+        for feature, split_importance, gain_importance in sorted_importances[:top_n]
+    ]
+
+
+def _format_markdown_value(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    return str(value)
+
+
+def _escape_markdown_cell(value: Any) -> str:
+    return _format_markdown_value(value).replace("|", "\\|").replace("\n", "<br>")
+
+
+def _markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
+    lines = [
+        f"| {' | '.join(headers)} |",
+        f"| {' | '.join(['---'] * len(headers))} |",
+    ]
+    for row in rows:
+        normalized_row = list(row[: len(headers)])
+        if len(normalized_row) < len(headers):
+            normalized_row.extend([None] * (len(headers) - len(normalized_row)))
+        lines.append(
+            f"| {' | '.join(_escape_markdown_cell(cell) for cell in normalized_row)} |"
+        )
+    return "\n".join(lines)
+
+
+def build_direction_markdown_report(
+    ticker: str,
+    prediction_result: dict[str, Any],
+) -> str:
+    metrics = prediction_result.get("metrics", {})
+    fold_metrics = prediction_result.get("fold_metrics", [])
+    validation_thresholds = metrics.get("validation_thresholds", {})
+    rolling_config = prediction_result.get("rolling_config", {})
+    generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    summary_rows = [
+        ["Ticker", ticker],
+        ["Model", prediction_result.get("model")],
+        ["Generated At", generated_at],
+        ["Last Date", prediction_result.get("last_date")],
+        ["Last Close", prediction_result.get("last_close")],
+        ["Horizon Days", prediction_result.get("horizon_days")],
+        ["Predicted Direction", prediction_result.get("predicted_direction")],
+        ["Signal", prediction_result.get("signal")],
+        ["Probability Up", prediction_result.get("probability_up")],
+        ["Probability Down", prediction_result.get("probability_down")],
+        ["Decision Threshold", prediction_result.get("decision_threshold")],
+        ["Model Valid", prediction_result.get("model_valid")],
+        ["Validation Method", prediction_result.get("validation_method")],
+        ["Target Return Threshold", prediction_result.get("target_return_threshold")],
+        ["Buy Probability Threshold", prediction_result.get("buy_probability_threshold")],
+        ["Sell Probability Threshold", prediction_result.get("sell_probability_threshold")],
+    ]
+    if prediction_result.get("reason"):
+        summary_rows.append(["Fallback Reason", prediction_result.get("reason")])
+
+    metric_names = [
+        "accuracy",
+        "balanced_accuracy",
+        "precision",
+        "recall",
+        "f1",
+        "roc_auc",
+        "log_loss",
+        "baseline_accuracy",
+        "decision_threshold",
+        "calibration_score",
+    ]
+    aggregate_rows: list[list[Any]] = [
+        ["fold_count", metrics.get("fold_count"), None, None, None],
+        ["total_fold_count", metrics.get("total_fold_count"), None, None, None],
+        ["beats_baseline_fold_ratio", metrics.get("beats_baseline_fold_ratio"), None, None, None],
+        ["confusion_matrix_sum", metrics.get("confusion_matrix_sum"), None, None, None],
+    ]
+    for metric_name in metric_names:
+        metric_values = metrics.get(metric_name, {})
+        aggregate_rows.append(
+            [
+                metric_name,
+                metric_values.get("mean"),
+                metric_values.get("std"),
+                metric_values.get("min"),
+                metric_values.get("max"),
+            ]
+        )
+
+    fold_overview_rows = [
+        [
+            fold.get("fold_number"),
+            fold.get("status"),
+            fold.get("test_start_date"),
+            fold.get("test_end_date"),
+            fold.get("accuracy"),
+            fold.get("balanced_accuracy"),
+            fold.get("roc_auc"),
+            fold.get("baseline_accuracy"),
+            fold.get("decision_threshold"),
+            fold.get("threshold_search_status"),
+        ]
+        for fold in fold_metrics
+    ]
+
+    lines = [
+        f"# Direction Validation Report: {ticker}",
+        "",
+        "## Prediction Summary",
+        _markdown_table(["Item", "Value"], summary_rows),
+        "",
+        "## Rolling Configuration",
+        _markdown_table(
+            ["Item", "Value"],
+            [[key, value] for key, value in rolling_config.items()],
+        ),
+        "",
+        "## Validation Thresholds",
+        _markdown_table(
+            ["Item", "Value"],
+            [[key, value] for key, value in validation_thresholds.items()],
+        ),
+        "",
+        "## Aggregate Validation Metrics",
+        _markdown_table(["Metric", "Mean", "Std", "Min", "Max"], aggregate_rows),
+        "",
+        "## Final Model Top Features",
+        _markdown_table(
+            ["Rank", "Feature", "Split Importance", "Gain Importance", "Gain Share"],
+            [
+                [
+                    rank,
+                    item.get("feature"),
+                    item.get("split_importance"),
+                    item.get("gain_importance"),
+                    item.get("gain_share"),
+                ]
+                for rank, item in enumerate(prediction_result.get("top_features", []), start=1)
+            ]
+            or [["N/A", "No feature importance data", None, None, None]],
+        ),
+        "",
+        "## Fold Overview",
+        _markdown_table(
+            [
+                "Fold",
+                "Status",
+                "Test Start",
+                "Test End",
+                "Acc",
+                "BalAcc",
+                "AUC",
+                "Baseline",
+                "Threshold",
+                "Threshold Search",
+            ],
+            fold_overview_rows or [["N/A", "No folds", None, None, None, None, None, None, None, None]],
+        ),
+        "",
+        "## Fold Details",
+        "",
+    ]
+
+    for fold in fold_metrics:
+        lines.extend(
+            [
+                f"### Fold {fold.get('fold_number')}",
+                "",
+                _markdown_table(
+                    ["Item", "Value"],
+                    [
+                        ["Status", fold.get("status")],
+                        ["Train Start", fold.get("train_start_date")],
+                        ["Train End", fold.get("train_end_date")],
+                        ["Test Start", fold.get("test_start_date")],
+                        ["Test End", fold.get("test_end_date")],
+                        ["Train Size", fold.get("train_size")],
+                        ["Test Size", fold.get("test_size")],
+                        ["Purge Size", fold.get("purge_size")],
+                        ["Accuracy", fold.get("accuracy")],
+                        ["Balanced Accuracy", fold.get("balanced_accuracy")],
+                        ["Precision", fold.get("precision")],
+                        ["Recall", fold.get("recall")],
+                        ["F1", fold.get("f1")],
+                        ["ROC-AUC", fold.get("roc_auc")],
+                        ["Log Loss", fold.get("log_loss")],
+                        ["Baseline Accuracy", fold.get("baseline_accuracy")],
+                        ["Decision Threshold", fold.get("decision_threshold")],
+                        ["Threshold Search Metric", fold.get("threshold_search_metric")],
+                        ["Threshold Search Status", fold.get("threshold_search_status")],
+                        ["Calibration Score", fold.get("calibration_score")],
+                        ["Model Backend", fold.get("model_backend")],
+                        ["Model Warning", fold.get("model_warning")],
+                        ["Confusion Matrix", fold.get("confusion_matrix")],
+                    ],
+                ),
+                "",
+                "Probability Summary",
+                "",
+                _markdown_table(
+                    ["Item", "Value"],
+                    [
+                        [key, value]
+                        for key, value in (fold.get("y_prob_summary") or {}).items()
+                    ]
+                    or [["N/A", "No probability summary"]],
+                ),
+                "",
+                "Top Features",
+                "",
+                _markdown_table(
+                    ["Rank", "Feature", "Split Importance", "Gain Importance", "Gain Share"],
+                    [
+                        [
+                            rank,
+                            item.get("feature"),
+                            item.get("split_importance"),
+                            item.get("gain_importance"),
+                            item.get("gain_share"),
+                        ]
+                        for rank, item in enumerate(fold.get("top_features", []), start=1)
+                    ]
+                    or [["N/A", "No feature importance data", None, None, None]],
+                ),
+                "",
+            ]
+        )
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def write_direction_markdown_report(
+    ticker: str,
+    prediction_result: dict[str, Any],
+    output_path: Optional[str] = None,
+) -> str:
+    safe_ticker = "".join(ch if ch.isalnum() else "_" for ch in ticker.upper()).strip("_") or "TICKER"
+    last_date = prediction_result.get("last_date") or "unknown_date"
+    horizon_days = prediction_result.get("horizon_days") or "na"
+    report_path = (
+        Path(output_path)
+        if output_path is not None
+        else Path("reports") / f"direction_validation_{safe_ticker}_{last_date}_h{horizon_days}.md"
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        build_direction_markdown_report(ticker, prediction_result),
+        encoding="utf-8",
+    )
+    return str(report_path.resolve())
+
+
 def _iter_rolling_window_splits(
     n_samples: int,
     train_size: int,
@@ -432,6 +728,7 @@ def _evaluate_direction_fold(
             "model_backend": fit_result["model_backend"],
             "model_warning": fit_result["model_warning"],
             "y_prob_summary": _summarize_probabilities(y_prob, optimal_threshold),
+            "top_features": _extract_feature_importances(model, feature_cols),
         }
     )
     return fold_result
@@ -678,26 +975,7 @@ def predict_direction_with_lgbm(
         direction = "MODEL_INVALID"
         signal = "HOLD"
 
-    split_importances = np.asarray(getattr(model_full, "feature_importances_", np.zeros(len(feature_cols))))
-    if hasattr(model_full, "booster_"):
-        gain_importances = model_full.booster_.feature_importance(importance_type="gain")
-    else:
-        gain_importances = split_importances.astype(float)
-    total_gain = float(np.sum(gain_importances))
-    sorted_importances = sorted(
-        zip(feature_cols, split_importances, gain_importances),
-        key=lambda item: item[2],
-        reverse=True,
-    )
-    top_features = [
-        {
-            "feature": feature,
-            "split_importance": int(split_importance),
-            "gain_importance": round(float(gain_importance), 4),
-            "gain_share": round(float(gain_importance) / total_gain, 4) if total_gain > 0 else 0.0,
-        }
-        for feature, split_importance, gain_importance in sorted_importances[:10]
-    ]
+    top_features = _extract_feature_importances(model_full, feature_cols)
 
     last_close = float(feature_df["Close"].iloc[-1])
     last_date = format_last_date(feature_df.index[-1])
@@ -753,7 +1031,7 @@ def predict_direction_with_lgbm(
     }
 
 def main():
-    ticker = "^N225"
+    ticker = "^GSPC"
     stock_ticker = ticker.upper()
 
     try:
@@ -764,12 +1042,14 @@ def main():
         predict_len_value = 10
         
 
-        df = stock.history(period="5y")
+        df = stock.history(period="10y")
         
         direction_response = predict_direction_with_lgbm(
             df, 
             predict_len=predict_len_value,
         )
+        report_path = write_direction_markdown_report(stock_ticker, direction_response)
+        print(f"Markdown report saved to: {report_path}")
     except Exception as exc:
         print(exc)
 
