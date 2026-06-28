@@ -7,7 +7,7 @@ APP_SECRET_KEY = os.environ.get(
 )
 
 DATABASE_PATH = os.environ.get("PORTFOLIO_DB_PATH", "portfolio.db")
-DEFAULT_TICKER = "AAPL"
+DEFAULT_TICKER = "^GSPC"
 DEFAULT_PREDICT_LEN = 10
 
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
@@ -41,9 +41,17 @@ DIRECTION_CONFIG = {
     "train_split": 0.8,
     "threshold_calibration_split": 0.25,
     "threshold_search_metric": "balanced_accuracy",
-    "target_return_threshold": 0.0,
+    "target_return_threshold": 0.005,
     "buy_probability_threshold": 0.60,
     "sell_probability_threshold": 0.40,
     "min_samples": 120,
+    "rolling_train_size": 504,
+    "rolling_test_size": 63,
+    "rolling_step_size": 63,
+    "rolling_purge_size": None,
+    "min_rolling_folds": 3,
+    "min_balanced_accuracy_mean": 0.52,
+    "min_roc_auc_mean": 0.52,
+    "min_beats_baseline_fold_ratio": 0.5,
     "random_state": 42,
 }
