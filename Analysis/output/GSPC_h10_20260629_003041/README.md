@@ -1,0 +1,52 @@
+# Data Check: ^GSPC
+
+## Configuration
+
+| Item | Value |
+| --- | --- |
+| ticker | ^GSPC |
+| predict_len | 10 |
+| period | 10y |
+| rolling_window | 252 |
+| threshold_log_return | 0.005000 |
+| threshold_simple_return_approx | 0.5013% |
+
+## Summary
+
+| Metric | Value |
+| --- | --- |
+| sample_count | 2504 |
+| start_date | 2016-06-27 |
+| end_date | 2026-06-11 |
+| mean_future_log_return | 0.005074443770587768 |
+| median_future_log_return | 0.00847894703033334 |
+| std_future_log_return | 0.03246705489804223 |
+| min_future_log_return | -0.2663945820379285 |
+| max_future_log_return | 0.17439416589602405 |
+| mean_future_return | 0.00560826429543535 |
+| median_future_return | 0.00851499511587761 |
+| std_future_return | 0.03188992508043337 |
+| share_up_zero | 0.6549520766773163 |
+| share_up_threshold | 0.5666932907348243 |
+| share_between_zero_and_threshold | 0.08825878594249201 |
+| q01_future_return | -0.09587563984973693 |
+| q05_future_return | -0.046983183878648783 |
+| q25_future_return | -0.007081764876411795 |
+| q50_future_return | 0.00851499511587761 |
+| q75_future_return | 0.023029408273934848 |
+| q95_future_return | 0.04791825315985165 |
+| q99_future_return | 0.08054627877740704 |
+| skew_future_return | -1.189206724535492 |
+| threshold_log_return | 0.005 |
+| threshold_simple_return_approx | 0.005012520859401064 |
+
+## Output Files
+
+- `/mnt/d/WSL_Work/FlaskApp/Analysis/output/GSPC_h10_20260629_003041/future_return_dataset.csv`
+- `/mnt/d/WSL_Work/FlaskApp/Analysis/output/GSPC_h10_20260629_003041/summary_metrics.csv`
+- `/mnt/d/WSL_Work/FlaskApp/Analysis/output/GSPC_h10_20260629_003041/yearly_summary.csv`
+- `/mnt/d/WSL_Work/FlaskApp/Analysis/output/GSPC_h10_20260629_003041/monthly_summary.csv`
+- `/mnt/d/WSL_Work/FlaskApp/Analysis/output/GSPC_h10_20260629_003041/future_return_histogram.png`
+- `/mnt/d/WSL_Work/FlaskApp/Analysis/output/GSPC_h10_20260629_003041/future_return_timeseries.png`
+- `/mnt/d/WSL_Work/FlaskApp/Analysis/output/GSPC_h10_20260629_003041/rolling_class_balance.png`
+- `/mnt/d/WSL_Work/FlaskApp/Analysis/output/GSPC_h10_20260629_003041/yearly_class_balance.png`
