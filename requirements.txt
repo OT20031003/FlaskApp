@@ -10,3 +10,4 @@ scikit-learn
 numpy
 google-generativeai
 lightgbm
+matplotlib

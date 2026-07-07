@@ -4,6 +4,7 @@ from typing import Any, Iterator, Optional
 
 import numpy as np
 import pandas as pd
+from sklearn.linear_model import Ridge
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
@@ -14,6 +15,7 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+from sklearn.preprocessing import StandardScaler
 from services import get_stock_data
 from config import DIRECTION_CONFIG
 from predictor_utils import direction_fallback, format_last_date
@@ -95,8 +97,8 @@ def _build_direction_features(
     feature_df["return_10"] = feature_df["Close"].pct_change(10, fill_method=None)
     feature_df["return_20"] = feature_df["Close"].pct_change(20, fill_method=None)
     feature_df["return_60"] = feature_df["Close"].pct_change(60, fill_method=None)
-    feature_df["volatility_5"] = feature_df["log_return_1"].rolling(5).std()
-    feature_df["volatility_10"] = feature_df["log_return_1"].rolling(10).std()
+    #feature_df["volatility_5"] = feature_df["log_return_1"].rolling(5).std()
+    #feature_df["volatility_10"] = feature_df["log_return_1"].rolling(10).std()
     feature_df["volatility_20"] = feature_df["log_return_1"].rolling(20).std()
     feature_df["volatility_60"] = feature_df["log_return_1"].rolling(60).std()
     feature_df["ma_gap_5"] = feature_df["Close"] / feature_df["Close"].rolling(5).mean() - 1
@@ -112,8 +114,8 @@ def _build_direction_features(
             "return_10",
             "return_20",
             "return_60",
-            "volatility_5",
-            "volatility_10",
+            #"volatility_5",
+            #"volatility_10",
             "volatility_20",
             "volatility_60",
             "ma_gap_5",
@@ -149,16 +151,23 @@ def _build_direction_features(
     feature_df["macd"] = feature_df["ema_12"] - feature_df["ema_26"]
     feature_df["macd_signal"] = feature_df["macd"].ewm(span=9, adjust=False).mean()
     feature_df["macd_hist"] = feature_df["macd"] - feature_df["macd_signal"]
+    feature_df["close_to_ema_12"] = feature_df["Close"] / feature_df["ema_12"] - 1
+    feature_df["close_to_ema_26"] = feature_df["Close"] / feature_df["ema_26"] - 1
+    feature_df["ema_12_to_ema_26"] = feature_df["ema_12"] / feature_df["ema_26"] - 1
+    feature_df["macd_to_close"] = feature_df["macd"] / feature_df["Close"]
+    feature_df["macd_signal_to_close"] = feature_df["macd_signal"] / feature_df["Close"]
+    feature_df["macd_hist_to_close"] = feature_df["macd_hist"] / feature_df["Close"]
     feature_cols.extend(
         [
             "dow_sin",
             "dow_cos",
             "rsi_14",
-            "ema_12",
-            "ema_26",
-            "macd",
-            "macd_signal",
-            "macd_hist",
+            "close_to_ema_12",
+            "close_to_ema_26",
+            "ema_12_to_ema_26",
+            "macd_to_close",
+            "macd_signal_to_close",
+            "macd_hist_to_close",
         ]
     )
 
@@ -174,6 +183,188 @@ def _build_direction_features(
     feature_df = feature_df.replace([np.inf, -np.inf], np.nan)
     feature_df = feature_df.dropna(subset=feature_cols).copy()
     return feature_df, feature_cols
+
+
+def _get_ridge_stack_feature_cols() -> list[str]:
+    return [
+        "ridge_pred_future_log_return",
+        "ridge_pred_future_return",
+        "ridge_pred_margin_to_threshold",
+        "ridge_pred_up_flag",
+    ]
+
+
+def _get_ridge_stack_config() -> dict[str, Optional[float]]:
+    train_window = DIRECTION_CONFIG.get("ridge_stack_train_window", 252)
+    normalized_train_window = int(train_window) if train_window else None
+    if normalized_train_window is not None and normalized_train_window <= 0:
+        normalized_train_window = None
+
+    return {
+        "alpha": float(DIRECTION_CONFIG.get("ridge_stack_alpha", 1.0)),
+        "train_window": normalized_train_window,
+        "min_train_samples": int(DIRECTION_CONFIG.get("ridge_stack_min_train_samples", 120)),
+    }
+
+
+def _build_ridge_stack_feature_frame(
+    index: pd.Index,
+    predicted_log_returns: np.ndarray,
+) -> pd.DataFrame:
+    threshold = float(DIRECTION_CONFIG.get("target_return_threshold", 0.0))
+    predicted_log_return_series = pd.Series(
+        np.asarray(predicted_log_returns, dtype=float).reshape(-1),
+        index=index,
+    )
+    feature_frame = pd.DataFrame(index=index)
+    feature_frame["ridge_pred_future_log_return"] = predicted_log_return_series
+    feature_frame["ridge_pred_future_return"] = np.expm1(predicted_log_return_series)
+    feature_frame["ridge_pred_margin_to_threshold"] = (
+        predicted_log_return_series - threshold
+    )
+    feature_frame["ridge_pred_up_flag"] = (
+        predicted_log_return_series > threshold
+    ).astype(float)
+    return feature_frame
+
+
+def _slice_ridge_stack_training_frame(
+    train_df: pd.DataFrame,
+    end_position: int,
+    train_window: Optional[int],
+) -> pd.DataFrame:
+    start_position = 0 if train_window is None else max(0, end_position - train_window)
+    return train_df.iloc[start_position:end_position].copy()
+
+
+def _fit_ridge_stack_model(
+    train_df: pd.DataFrame,
+    feature_cols: list[str],
+    alpha: float,
+) -> dict[str, Any]:
+    scaler = StandardScaler()
+    x_train_scaled = scaler.fit_transform(train_df[feature_cols].to_numpy())
+    model = Ridge(alpha=alpha)
+    model.fit(x_train_scaled, train_df["future_log_return"].astype(float).to_numpy())
+    return {
+        "scaler": scaler,
+        "model": model,
+    }
+
+
+def _predict_ridge_stack_model(
+    ridge_stack_fit: dict[str, Any],
+    predict_df: pd.DataFrame,
+    feature_cols: list[str],
+) -> np.ndarray:
+    x_predict_scaled = ridge_stack_fit["scaler"].transform(
+        predict_df[feature_cols].to_numpy()
+    )
+    return np.asarray(
+        ridge_stack_fit["model"].predict(x_predict_scaled),
+        dtype=float,
+    ).reshape(-1)
+
+
+def _append_ridge_stack_features(
+    df: pd.DataFrame,
+    predicted_log_returns: np.ndarray,
+) -> pd.DataFrame:
+    ridge_feature_frame = _build_ridge_stack_feature_frame(df.index, predicted_log_returns)
+    return df.join(ridge_feature_frame)
+
+
+def _build_ridge_stack_oof_predictions(
+    train_df: pd.DataFrame,
+    feature_cols: list[str],
+    predict_len: int,
+    train_window: Optional[int],
+    min_train_samples: int,
+    alpha: float,
+) -> pd.Series:
+    oof_predictions = pd.Series(np.nan, index=train_df.index, dtype=float)
+
+    for row_position in range(len(train_df)):
+        known_target_end = row_position - predict_len + 1
+        if known_target_end < min_train_samples:
+            continue
+
+        ridge_train_df = _slice_ridge_stack_training_frame(
+            train_df,
+            known_target_end,
+            train_window,
+        )
+        if len(ridge_train_df) < min_train_samples:
+            continue
+
+        ridge_stack_fit = _fit_ridge_stack_model(ridge_train_df, feature_cols, alpha)
+        row_prediction = _predict_ridge_stack_model(
+            ridge_stack_fit,
+            train_df.iloc[[row_position]],
+            feature_cols,
+        )
+        oof_predictions.iloc[row_position] = float(row_prediction[0])
+
+    return oof_predictions
+
+
+def _prepare_ridge_stack_training_data(
+    train_df: pd.DataFrame,
+    feature_cols: list[str],
+    predict_len: int,
+) -> tuple[pd.DataFrame, dict[str, Any], list[str]]:
+    ridge_stack_config = _get_ridge_stack_config()
+    ridge_feature_cols = _get_ridge_stack_feature_cols()
+    min_train_samples = int(ridge_stack_config["min_train_samples"] or 0)
+    alpha = float(ridge_stack_config["alpha"] or 1.0)
+    train_window = (
+        int(ridge_stack_config["train_window"])
+        if ridge_stack_config["train_window"] is not None
+        else None
+    )
+
+    if len(train_df) < min_train_samples:
+        raise ValueError("Not enough data for ridge stack training")
+
+    oof_predictions = _build_ridge_stack_oof_predictions(
+        train_df,
+        feature_cols,
+        predict_len,
+        train_window,
+        min_train_samples,
+        alpha,
+    )
+    augmented_train_df = _append_ridge_stack_features(train_df, oof_predictions.to_numpy())
+    augmented_train_df = augmented_train_df.dropna(subset=ridge_feature_cols).copy()
+    if len(augmented_train_df) < min_train_samples:
+        raise ValueError("Not enough ridge stack OOF samples for direction training")
+
+    ridge_fit_train_df = _slice_ridge_stack_training_frame(
+        train_df,
+        len(train_df),
+        train_window,
+    )
+    if len(ridge_fit_train_df) < min_train_samples:
+        raise ValueError("Not enough data for ridge stack inference model")
+
+    ridge_stack_fit = _fit_ridge_stack_model(ridge_fit_train_df, feature_cols, alpha)
+    return augmented_train_df, ridge_stack_fit, ridge_feature_cols
+
+
+def _apply_ridge_stack_features(
+    predict_df: pd.DataFrame,
+    ridge_stack_fit: dict[str, Any],
+    feature_cols: list[str],
+) -> pd.DataFrame:
+    if predict_df.empty:
+        return predict_df.copy()
+
+    predicted_log_returns = _predict_ridge_stack_model(
+        ridge_stack_fit,
+        predict_df,
+        feature_cols,
+    )
+    return _append_ridge_stack_features(predict_df, predicted_log_returns)
 
 
 def _build_direction_model() -> Any:
@@ -566,9 +757,9 @@ def _fit_direction_model_with_threshold(
     feature_cols: list[str],
     calibration_ratio: float,
     threshold_metric: str,
+    predict_len: int,
 ) -> dict[str, Any]:
-    y_train = train_df["target"].astype(int)
-    if y_train.nunique() < 2:
+    if train_df["target"].astype(int).nunique() < 2:
         raise ValueError("Training data contains only one direction class")
 
     calibration_len = int(len(train_df) * calibration_ratio)
@@ -577,20 +768,41 @@ def _fit_direction_model_with_threshold(
     optimal_threshold = 0.5
     calibration_score: Optional[float] = None
     threshold_search_status = "disabled"
+    model: Optional[Any] = None
+    ridge_stack_fit: Optional[dict[str, Any]] = None
+    stacked_feature_cols = feature_cols.copy()
 
     threshold_search_enabled = calibration_len > 0 and calibration_len < len(train_df)
     if threshold_search_enabled:
         fit_df = train_df.iloc[:-calibration_len].copy()
         calibration_df = train_df.iloc[-calibration_len:].copy()
-        y_fit = fit_df["target"].astype(int)
         y_calibration = calibration_df["target"].astype(int)
 
-        if y_fit.nunique() >= 2 and y_calibration.nunique() >= 2:
-            threshold_model = _build_direction_model()
-            threshold_model.fit(fit_df[feature_cols], y_fit)
-            calibration_probabilities = threshold_model.predict_proba(calibration_df[feature_cols])[:, 1]
+        if fit_df["target"].astype(int).nunique() >= 2 and y_calibration.nunique() >= 2:
+            fit_df, ridge_stack_fit, ridge_feature_cols = _prepare_ridge_stack_training_data(
+                fit_df,
+                feature_cols,
+                predict_len,
+            )
+            if fit_df["target"].astype(int).nunique() < 2:
+                raise ValueError("Training data contains only one direction class after ridge stack OOF")
+            stacked_feature_cols = feature_cols + ridge_feature_cols
+            calibration_df = _apply_ridge_stack_features(
+                calibration_df,
+                ridge_stack_fit,
+                feature_cols,
+            )
+            calibration_df = calibration_df.dropna(subset=stacked_feature_cols).copy()
+            if calibration_df.empty:
+                raise ValueError("Not enough calibration samples after ridge stack features")
+
+            model = _build_direction_model()
+            model.fit(fit_df[stacked_feature_cols], fit_df["target"].astype(int))
+            calibration_probabilities = model.predict_proba(
+                calibration_df[stacked_feature_cols]
+            )[:, 1]
             optimal_threshold, calibration_score = _find_optimal_direction_threshold(
-                y_calibration,
+                calibration_df["target"].astype(int),
                 calibration_probabilities,
                 threshold_metric,
             )
@@ -600,10 +812,22 @@ def _fit_direction_model_with_threshold(
     else:
         threshold_search_status = "insufficient_samples"
 
-    model = _build_direction_model()
-    model.fit(train_df[feature_cols], y_train)
+    if model is None:
+        fit_df, ridge_stack_fit, ridge_feature_cols = _prepare_ridge_stack_training_data(
+            train_df,
+            feature_cols,
+            predict_len,
+        )
+        if fit_df["target"].astype(int).nunique() < 2:
+            raise ValueError("Training data contains only one direction class after ridge stack OOF")
+        stacked_feature_cols = feature_cols + ridge_feature_cols
+        model = _build_direction_model()
+        model.fit(fit_df[stacked_feature_cols], fit_df["target"].astype(int))
+
     return {
         "model": model,
+        "feature_cols": stacked_feature_cols,
+        "ridge_stack_fit": ridge_stack_fit,
         "decision_threshold": float(optimal_threshold),
         "calibration_score": calibration_score,
         "threshold_search_status": threshold_search_status,
@@ -618,6 +842,7 @@ def _evaluate_direction_fold(
     split: dict[str, int],
     calibration_ratio: float,
     threshold_metric: str,
+    predict_len: int,
 ) -> dict[str, Any]:
     train_df = training_df.iloc[split["train_start"]:split["train_end"]].copy()
     test_df = training_df.iloc[split["test_start"]:split["test_end"]].copy()
@@ -661,14 +886,13 @@ def _evaluate_direction_fold(
         )
         return fold_result
 
-    y_test = test_df["target"].astype(int)
-
     try:
         fit_result = _fit_direction_model_with_threshold(
             train_df,
             feature_cols,
             calibration_ratio,
             threshold_metric,
+            predict_len,
         )
     except ValueError as exc:
         fold_result.update(
@@ -695,8 +919,39 @@ def _evaluate_direction_fold(
         return fold_result
 
     model = fit_result["model"]
+    stacked_feature_cols = fit_result["feature_cols"]
     optimal_threshold = float(fit_result["decision_threshold"])
-    y_prob = model.predict_proba(test_df[feature_cols])[:, 1]
+    augmented_test_df = _apply_ridge_stack_features(
+        test_df,
+        fit_result["ridge_stack_fit"],
+        feature_cols,
+    )
+    if augmented_test_df.empty:
+        fold_result.update(
+            {
+                "status": "insufficient_test_samples_after_ridge_stack",
+                "accuracy": None,
+                "balanced_accuracy": None,
+                "precision": None,
+                "recall": None,
+                "f1": None,
+                "roc_auc": None,
+                "log_loss": None,
+                "baseline_accuracy": None,
+                "confusion_matrix": None,
+                "decision_threshold": None,
+                "threshold_search_metric": threshold_metric,
+                "threshold_search_status": fit_result["threshold_search_status"],
+                "calibration_score": None,
+                "model_backend": fit_result["model_backend"],
+                "model_warning": fit_result["model_warning"],
+                "y_prob_summary": None,
+            }
+        )
+        return fold_result
+
+    y_test = augmented_test_df["target"].astype(int)
+    y_prob = model.predict_proba(augmented_test_df[stacked_feature_cols])[:, 1]
     y_pred = (y_prob >= optimal_threshold).astype(int)
     majority_class = int(y_test.mode().iloc[0])
     baseline_predictions = np.full_like(y_test.to_numpy(), majority_class)
@@ -728,7 +983,7 @@ def _evaluate_direction_fold(
             "model_backend": fit_result["model_backend"],
             "model_warning": fit_result["model_warning"],
             "y_prob_summary": _summarize_probabilities(y_prob, optimal_threshold),
-            "top_features": _extract_feature_importances(model, feature_cols),
+            "top_features": _extract_feature_importances(model, stacked_feature_cols),
         }
     )
     return fold_result
@@ -802,6 +1057,7 @@ def validate_direction_with_rolling_window(
 ) -> dict[str, Any]:
     calibration_ratio = DIRECTION_CONFIG.get("threshold_calibration_split", 0.25)
     threshold_metric = DIRECTION_CONFIG.get("threshold_search_metric", "balanced_accuracy")
+    ridge_stack_config = _get_ridge_stack_config()
     train_size = int(DIRECTION_CONFIG.get("rolling_train_size", 504))
     test_size = int(DIRECTION_CONFIG.get("rolling_test_size", 63))
     step_size = int(DIRECTION_CONFIG.get("rolling_step_size", test_size))
@@ -816,6 +1072,9 @@ def validate_direction_with_rolling_window(
         "purge_size": purge_size,
         "calibration_ratio": calibration_ratio,
         "threshold_metric": threshold_metric,
+        "ridge_stack_alpha": ridge_stack_config["alpha"],
+        "ridge_stack_train_window": ridge_stack_config["train_window"],
+        "ridge_stack_min_train_samples": ridge_stack_config["min_train_samples"],
     }
 
     splits = list(
@@ -834,6 +1093,7 @@ def validate_direction_with_rolling_window(
             split,
             calibration_ratio,
             threshold_metric,
+            predict_len,
         )
         for split in splits
     ]
@@ -897,8 +1157,8 @@ def predict_direction_with_lgbm(
             "Not enough valid feature rows for direction classification",
         )
 
-    latest_features = feature_df[feature_cols].iloc[[-1]]
-    if latest_features.isna().any().any():
+    latest_base_df = feature_df.iloc[[-1]].copy()
+    if latest_base_df[feature_cols].isna().any().any():
         return direction_fallback(
             df,
             predict_len,
@@ -947,15 +1207,28 @@ def predict_direction_with_lgbm(
             feature_cols,
             float(rolling_config["calibration_ratio"]),
             str(rolling_config["threshold_metric"]),
+            predict_len,
         )
     except ValueError as exc:
         return direction_fallback(df, predict_len, str(exc))
 
     model_full = final_fit["model"]
+    stacked_feature_cols = final_fit["feature_cols"]
     optimal_threshold = float(final_fit["decision_threshold"])
     full_model_backend = final_fit["model_backend"]
+    latest_features = _apply_ridge_stack_features(
+        latest_base_df,
+        final_fit["ridge_stack_fit"],
+        feature_cols,
+    )
+    if latest_features[stacked_feature_cols].isna().any().any():
+        return direction_fallback(
+            df,
+            predict_len,
+            "Latest ridge stack feature row contains NaN values",
+        )
 
-    latest_probabilities = model_full.predict_proba(latest_features)[0]
+    latest_probabilities = model_full.predict_proba(latest_features[stacked_feature_cols])[0]
     prob_up = float(latest_probabilities[1])
     prob_down = float(1.0 - prob_up)
 
@@ -975,7 +1248,7 @@ def predict_direction_with_lgbm(
         direction = "MODEL_INVALID"
         signal = "HOLD"
 
-    top_features = _extract_feature_importances(model_full, feature_cols)
+    top_features = _extract_feature_importances(model_full, stacked_feature_cols)
 
     last_close = float(feature_df["Close"].iloc[-1])
     last_date = format_last_date(feature_df.index[-1])
@@ -1031,7 +1304,7 @@ def predict_direction_with_lgbm(
     }
 
 def main():
-    ticker = "^GSPC"
+    ticker = "^N225"
     stock_ticker = ticker.upper()
 
     try:
