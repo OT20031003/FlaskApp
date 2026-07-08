@@ -27,6 +27,15 @@ from services import (
 
 BASE_DIR = Path(__file__).resolve().parent
 SHARE_EPSILON = 1e-9
+HISTORY_PERIODS = {
+    "5d": "5日",
+    "1mo": "一か月",
+    "6mo": "半年",
+    "1y": "一年",
+    "3y": "3年",
+    "5y": "5年",
+    "10y": "10年",
+}
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 app = FastAPI()
@@ -50,6 +59,12 @@ def parse_predict_len(predict_len: Optional[str]) -> int:
         return DEFAULT_PREDICT_LEN
 
 
+def parse_history_period(period: Optional[str]) -> str:
+    if period in HISTORY_PERIODS:
+        return period
+    return "1y"
+
+
 def parse_share_amount(shares: Optional[str]) -> float:
     amount = float(shares)
     if not math.isfinite(amount) or amount <= 0:
@@ -65,11 +80,15 @@ def format_shares(shares: float) -> str:
 def build_chart_data(stock_ticker: str, current_price: float, df: pd.DataFrame) -> dict:
     labels = df.index.strftime("%Y-%m-%d").tolist()
     price_data = df["Close"].tolist()
+    ema_12_data = df["Close"].ewm(span=12, adjust=False).mean().tolist()
+    ema_26_data = df["Close"].ewm(span=26, adjust=False).mean().tolist()
     empty_prediction_data = [None] * len(labels)
 
     return {
         "labels": labels,
         "data": price_data,
+        "ema_12_data": ema_12_data,
+        "ema_26_data": ema_26_data,
         "prediction_data_lstm": empty_prediction_data.copy(),
         "prediction_data_ridge": empty_prediction_data.copy(),
         "ticker": stock_ticker,
@@ -109,6 +128,8 @@ def build_prediction_response(
     prediction_data_ridge = ridge_prediction_series.tolist()
     historical_labels = df.index.strftime("%Y-%m-%d").tolist()
     historical_data = df["Close"].tolist()
+    ema_12_data = df["Close"].ewm(span=12, adjust=False).mean().tolist()
+    ema_26_data = df["Close"].ewm(span=26, adjust=False).mean().tolist()
     if historical_data:
         prediction_data_points_lstm = [None] * (len(historical_data) - 1) + [
             historical_data[-1]
@@ -123,6 +144,8 @@ def build_prediction_response(
     chart_data = {
         "labels": historical_labels + prediction_labels,
         "data": historical_data + [None] * len(prediction_labels),
+        "ema_12_data": ema_12_data + [None] * len(prediction_labels),
+        "ema_26_data": ema_26_data + [None] * len(prediction_labels),
         "prediction_data_lstm": prediction_data_points_lstm,
         "prediction_data_ridge": prediction_data_points_ridge,
         "ticker": stock_ticker,
@@ -400,7 +423,12 @@ def search():
 
 
 @app.get("/stock/{ticker}", response_class=HTMLResponse, name="index")
-def index(request: Request, ticker: str, predict_len: Optional[str] = None):
+def index(
+    request: Request,
+    ticker: str,
+    predict_len: Optional[str] = None,
+    period: Optional[str] = None,
+):
     stock_ticker = ticker.upper()
     stock, current_price = get_stock_data(stock_ticker)
     if stock is None:
@@ -423,7 +451,8 @@ def index(request: Request, ticker: str, predict_len: Optional[str] = None):
         transactions,
     )
 
-    df = stock.history(period="1y")
+    selected_period = parse_history_period(period)
+    df = stock.history(period=selected_period)
     predict_len_value = parse_predict_len(predict_len)
     chart_data = build_chart_data(stock_ticker, current_price, df)
 
@@ -443,12 +472,18 @@ def index(request: Request, ticker: str, predict_len: Optional[str] = None):
             "company_name": company_name,
             "flash_messages": pop_flash_messages(request),
             "predict_len": predict_len_value,
+            "selected_period": selected_period,
+            "history_periods": HISTORY_PERIODS,
         },
     )
 
 
 @app.get("/api/stock/{ticker}/predict", name="predict_stock")
-def predict_stock(ticker: str, predict_len: Optional[str] = None):
+def predict_stock(
+    ticker: str,
+    predict_len: Optional[str] = None,
+    period: Optional[str] = None,
+):
     stock_ticker = ticker.upper()
 
     try:
@@ -460,7 +495,8 @@ def predict_stock(ticker: str, predict_len: Optional[str] = None):
             )
 
         predict_len_value = parse_predict_len(predict_len)
-        df = stock.history(period="1y")
+        selected_period = parse_history_period(period)
+        df = stock.history(period=selected_period)
         prediction_response = build_prediction_response(
             stock_ticker,
             current_price,

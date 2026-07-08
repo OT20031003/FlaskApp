@@ -23,6 +23,17 @@
         </div>
         {% endif %}
 
+        <div class="d-flex flex-wrap gap-2 mb-3">
+            {% for period_value, period_label in history_periods.items() %}
+            <a
+                href="{{ request.url_for('index', ticker=chart_data_py.ticker) }}?period={{ period_value }}"
+                class="btn btn-sm {% if selected_period == period_value %}btn-primary{% else %}btn-outline-primary{% endif %}"
+            >
+                {{ period_label }}
+            </a>
+            {% endfor %}
+        </div>
+
         <div class="chart-container mt-3">
             <canvas id="stockChart"></canvas>
         </div>
@@ -146,12 +157,16 @@
     document.getElementById('searchForm').addEventListener('submit', function(e) {
         e.preventDefault();
         const ticker = document.getElementById('tickerInput').value.toUpperCase();
-        window.location.href = '/stock/' + ticker;
+        const params = new URLSearchParams({
+            period: '{{ selected_period }}'
+        });
+        window.location.href = '/stock/' + ticker + '?' + params.toString();
     });
 
     let chartData = JSON.parse('{{ chart_data_json | safe }}');
     const predictionApiUrl = "{{ request.url_for('predict_stock', ticker=chart_data_py.ticker) }}";
     const directionApiUrl = "{{ request.url_for('predict_stock_direction', ticker=chart_data_py.ticker) }}";
+    const selectedPeriod = '{{ selected_period }}';
     const pricePredictionForm = document.getElementById('pricePredictionForm');
     const directionPredictionForm = document.getElementById('directionPredictionForm');
     const pricePredictLenInput = document.getElementById('predict_len_price');
@@ -184,6 +199,26 @@
                     tension: 0.1, 
                     pointRadius: 1, 
                     pointHitRadius: 10 
+                },
+                {
+                    label: 'EMA 12',
+                    data: chartData.ema_12_data,
+                    borderColor: 'rgba(54, 162, 235, 1)',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.1,
+                    pointRadius: 0,
+                    pointHitRadius: 10
+                },
+                {
+                    label: 'EMA 26',
+                    data: chartData.ema_26_data,
+                    borderColor: 'rgba(153, 102, 255, 1)',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.1,
+                    pointRadius: 0,
+                    pointHitRadius: 10
                 },
                 { 
                     label: '予測 (リターンLSTM)',
@@ -316,8 +351,10 @@
         chartData = nextChartData;
         myChart.data.labels = chartData.labels;
         myChart.data.datasets[0].data = chartData.data;
-        myChart.data.datasets[1].data = chartData.prediction_data_lstm;
-        myChart.data.datasets[2].data = chartData.prediction_data_ridge;
+        myChart.data.datasets[1].data = chartData.ema_12_data;
+        myChart.data.datasets[2].data = chartData.ema_26_data;
+        myChart.data.datasets[3].data = chartData.prediction_data_lstm;
+        myChart.data.datasets[4].data = chartData.prediction_data_ridge;
         myChart.update();
 
         predictedPriceLstm.textContent = formatPredictionPrice(lstmPrice);
@@ -333,7 +370,8 @@
 
         try {
             const params = new URLSearchParams({
-                predict_len: pricePredictLenInput.value
+                predict_len: pricePredictLenInput.value,
+                period: selectedPeriod
             });
             const payload = await fetchJsonPayload(
                 `${predictionApiUrl}?${params.toString()}`,

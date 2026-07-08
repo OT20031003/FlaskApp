@@ -1391,7 +1391,7 @@ def predict_direction_with_lgbm(
     }
 
 def main():
-    ticker = "NVDA"
+    ticker = "^GSPC"
     stock_ticker = ticker.upper()
 
     try:
