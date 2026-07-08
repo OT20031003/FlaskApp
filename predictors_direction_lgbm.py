@@ -2,6 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+import matplotlib
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge
@@ -19,6 +20,9 @@ from sklearn.preprocessing import StandardScaler
 from services import get_stock_data
 from config import DIRECTION_CONFIG
 from predictor_utils import direction_fallback, format_last_date
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
@@ -718,6 +722,89 @@ def write_direction_markdown_report(
     return str(report_path.resolve())
 
 
+def _sanitize_path_component(value: Any) -> str:
+    normalized = "".join(
+        ch if str(ch).isalnum() or ch in {"-", "_"} else "_"
+        for ch in str(value)
+    )
+    return normalized.strip("_") or "value"
+
+
+def create_direction_output_dir(
+    ticker: str,
+    last_date: Optional[str],
+    horizon_days: Any,
+    base_dir: str = "reports",
+) -> Path:
+    safe_ticker = _sanitize_path_component(str(ticker).upper())
+    safe_last_date = _sanitize_path_component(last_date or "unknown_date")
+    safe_horizon = _sanitize_path_component(f"h{horizon_days}")
+    output_dir = Path(base_dir) / f"direction_lgbm_{safe_ticker}_{safe_last_date}_{safe_horizon}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def write_feature_scatter_plots(
+    ticker: str,
+    feature_df: pd.DataFrame,
+    feature_cols: list[str],
+    predict_len: int,
+    output_dir: Path,
+) -> list[str]:
+    scatter_df = feature_df[feature_df["future_log_return"].notna()].copy()
+    if scatter_df.empty or not feature_cols:
+        return []
+
+    scatter_df["future_return_pct"] = np.expm1(scatter_df["future_log_return"]) * 100.0
+    saved_paths: list[str] = []
+
+    for index, feature_name in enumerate(feature_cols, start=1):
+        if feature_name not in scatter_df.columns:
+            continue
+
+        plot_df = scatter_df[[feature_name, "future_return_pct"]].dropna()
+        if plot_df.empty:
+            continue
+        correlation = plot_df[feature_name].corr(plot_df["future_return_pct"])
+        correlation_text = (
+            f"Corr = {correlation:.4f}" if pd.notna(correlation) else "Corr = N/A"
+        )
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.scatter(
+            plot_df[feature_name],
+            plot_df["future_return_pct"],
+            alpha=0.35,
+            s=12,
+            edgecolors="none",
+        )
+        ax.axhline(0.0, color="tomato", linestyle="--", linewidth=1)
+        ax.set_title(
+            f"{ticker} {feature_name} vs {predict_len}-day Future Return ({correlation_text})"
+        )
+        ax.set_xlabel(feature_name)
+        ax.set_ylabel(f"Future Return after {predict_len} days (%)")
+        ax.text(
+            0.02,
+            0.98,
+            correlation_text,
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
+        )
+        ax.grid(alpha=0.2)
+        fig.tight_layout()
+
+        file_name = f"{index:02d}_scatter_{_sanitize_path_component(feature_name)}.png"
+        plot_path = output_dir / file_name
+        fig.savefig(plot_path, dpi=150)
+        plt.close(fig)
+        saved_paths.append(str(plot_path.resolve()))
+
+    return saved_paths
+
+
 def _iter_rolling_window_splits(
     n_samples: int,
     train_size: int,
@@ -1304,7 +1391,7 @@ def predict_direction_with_lgbm(
     }
 
 def main():
-    ticker = "^N225"
+    ticker = "NVDA"
     stock_ticker = ticker.upper()
 
     try:
@@ -1321,8 +1408,27 @@ def main():
             df, 
             predict_len=predict_len_value,
         )
-        report_path = write_direction_markdown_report(stock_ticker, direction_response)
+        output_dir = create_direction_output_dir(
+            stock_ticker,
+            direction_response.get("last_date"),
+            predict_len_value,
+        )
+        report_path = write_direction_markdown_report(
+            stock_ticker,
+            direction_response,
+            output_path=str(output_dir / "direction_validation_report.md"),
+        )
+        feature_df, feature_cols = _build_direction_features(df, predict_len_value)
+        scatter_plot_paths = write_feature_scatter_plots(
+            stock_ticker,
+            feature_df,
+            feature_cols,
+            predict_len_value,
+            output_dir,
+        )
         print(f"Markdown report saved to: {report_path}")
+        print(f"Output directory: {output_dir.resolve()}")
+        print(f"Feature scatter plots saved: {len(scatter_plot_paths)}")
     except Exception as exc:
         print(exc)
 
