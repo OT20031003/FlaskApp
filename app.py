@@ -1,6 +1,6 @@
 import json
 import math
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -63,6 +63,89 @@ def parse_history_period(period: Optional[str]) -> str:
     if period in HISTORY_PERIODS:
         return period
     return "1y"
+
+
+def parse_history_date(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def resolve_history_params(
+    period: Optional[str],
+    start_date: Optional[str],
+    end_date: Optional[str],
+) -> tuple[str, Optional[str], Optional[str], bool, Optional[str]]:
+    selected_period = parse_history_period(period)
+    parsed_start = parse_history_date(start_date)
+    parsed_end = parse_history_date(end_date)
+
+    if start_date and parsed_start is None:
+        return selected_period, None, None, False, "開始日の形式が不正です。"
+    if end_date and parsed_end is None:
+        return selected_period, None, None, False, "終了日の形式が不正です。"
+    if parsed_start and parsed_end and parsed_start > parsed_end:
+        return selected_period, None, None, False, "開始日は終了日以前にしてください。"
+
+    if parsed_start or parsed_end:
+        return (
+            selected_period,
+            parsed_start.isoformat() if parsed_start else None,
+            parsed_end.isoformat() if parsed_end else None,
+            True,
+            None,
+        )
+
+    return selected_period, None, None, False, None
+
+
+def get_history_dataframe(
+    stock,
+    period: Optional[str],
+    start_date: Optional[str],
+    end_date: Optional[str],
+) -> tuple[pd.DataFrame, str, Optional[str], Optional[str], bool, Optional[str]]:
+    (
+        selected_period,
+        resolved_start_date,
+        resolved_end_date,
+        is_custom_range,
+        range_error,
+    ) = resolve_history_params(period, start_date, end_date)
+
+    if range_error:
+        return (
+            stock.history(period=selected_period),
+            selected_period,
+            None,
+            None,
+            False,
+            range_error,
+        )
+
+    if is_custom_range:
+        history_kwargs = {}
+        if resolved_start_date:
+            history_kwargs["start"] = resolved_start_date
+        if resolved_end_date:
+            history_kwargs["end"] = (
+                datetime.strptime(resolved_end_date, "%Y-%m-%d") + timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+        df = stock.history(**history_kwargs)
+    else:
+        df = stock.history(period=selected_period)
+
+    return (
+        df,
+        selected_period,
+        resolved_start_date,
+        resolved_end_date,
+        is_custom_range,
+        None,
+    )
 
 
 def parse_share_amount(shares: Optional[str]) -> float:
@@ -428,6 +511,8 @@ def index(
     ticker: str,
     predict_len: Optional[str] = None,
     period: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ):
     stock_ticker = ticker.upper()
     stock, current_price = get_stock_data(stock_ticker)
@@ -451,8 +536,18 @@ def index(
         transactions,
     )
 
-    selected_period = parse_history_period(period)
-    df = stock.history(period=selected_period)
+    (
+        df,
+        selected_period,
+        selected_start_date,
+        selected_end_date,
+        is_custom_range,
+        range_error,
+    ) = get_history_dataframe(stock, period, start_date, end_date)
+    if range_error:
+        add_flash_message(request, range_error, "warning")
+    if df.empty:
+        add_flash_message(request, "指定した期間の株価データが見つかりませんでした。", "warning")
     predict_len_value = parse_predict_len(predict_len)
     chart_data = build_chart_data(stock_ticker, current_price, df)
 
@@ -473,6 +568,9 @@ def index(
             "flash_messages": pop_flash_messages(request),
             "predict_len": predict_len_value,
             "selected_period": selected_period,
+            "selected_start_date": selected_start_date,
+            "selected_end_date": selected_end_date,
+            "is_custom_range": is_custom_range,
             "history_periods": HISTORY_PERIODS,
         },
     )
@@ -483,6 +581,8 @@ def predict_stock(
     ticker: str,
     predict_len: Optional[str] = None,
     period: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ):
     stock_ticker = ticker.upper()
 
@@ -495,8 +595,21 @@ def predict_stock(
             )
 
         predict_len_value = parse_predict_len(predict_len)
-        selected_period = parse_history_period(period)
-        df = stock.history(period=selected_period)
+        (
+            df,
+            _selected_period,
+            _selected_start_date,
+            _selected_end_date,
+            _is_custom_range,
+            range_error,
+        ) = get_history_dataframe(stock, period, start_date, end_date)
+        if range_error:
+            return JSONResponse(status_code=400, content={"error": range_error})
+        if df.empty:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "指定した期間の株価データが見つかりませんでした。"},
+            )
         prediction_response = build_prediction_response(
             stock_ticker,
             current_price,

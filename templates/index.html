@@ -27,12 +27,27 @@
             {% for period_value, period_label in history_periods.items() %}
             <a
                 href="{{ request.url_for('index', ticker=chart_data_py.ticker) }}?period={{ period_value }}"
-                class="btn btn-sm {% if selected_period == period_value %}btn-primary{% else %}btn-outline-primary{% endif %}"
+                class="btn btn-sm {% if (not is_custom_range) and selected_period == period_value %}btn-primary{% else %}btn-outline-primary{% endif %}"
             >
                 {{ period_label }}
             </a>
             {% endfor %}
         </div>
+
+        <form action="{{ request.url_for('index', ticker=chart_data_py.ticker) }}" method="get" class="row g-2 align-items-end mb-3">
+            <div class="col-sm-4">
+                <label for="start_date" class="form-label mb-1">開始日</label>
+                <input type="date" id="start_date" name="start_date" class="form-control" value="{{ selected_start_date or '' }}">
+            </div>
+            <div class="col-sm-4">
+                <label for="end_date" class="form-label mb-1">終了日</label>
+                <input type="date" id="end_date" name="end_date" class="form-control" value="{{ selected_end_date or '' }}">
+            </div>
+            <div class="col-sm-4 d-flex gap-2">
+                <button type="submit" class="btn btn-primary">期間を適用</button>
+                <a href="{{ request.url_for('index', ticker=chart_data_py.ticker) }}?period=1y" class="btn btn-outline-secondary">リセット</a>
+            </div>
+        </form>
 
         <div class="chart-container mt-3">
             <canvas id="stockChart"></canvas>
@@ -154,19 +169,12 @@
 {% block scripts %}
 <script>
 
-    document.getElementById('searchForm').addEventListener('submit', function(e) {
-        e.preventDefault();
-        const ticker = document.getElementById('tickerInput').value.toUpperCase();
-        const params = new URLSearchParams({
-            period: '{{ selected_period }}'
-        });
-        window.location.href = '/stock/' + ticker + '?' + params.toString();
-    });
-
     let chartData = JSON.parse('{{ chart_data_json | safe }}');
     const predictionApiUrl = "{{ request.url_for('predict_stock', ticker=chart_data_py.ticker) }}";
     const directionApiUrl = "{{ request.url_for('predict_stock_direction', ticker=chart_data_py.ticker) }}";
     const selectedPeriod = '{{ selected_period }}';
+    const selectedStartDate = '{{ selected_start_date or "" }}';
+    const selectedEndDate = '{{ selected_end_date or "" }}';
     const pricePredictionForm = document.getElementById('pricePredictionForm');
     const directionPredictionForm = document.getElementById('directionPredictionForm');
     const pricePredictLenInput = document.getElementById('predict_len_price');
@@ -184,6 +192,29 @@
     const directionTopFeaturesEmpty = document.getElementById('directionTopFeaturesEmpty');
     const directionTopFeaturesTable = document.getElementById('directionTopFeaturesTable');
     const directionTopFeaturesBody = document.getElementById('directionTopFeaturesBody');
+
+    function appendHistoryParams(params) {
+        if (selectedStartDate || selectedEndDate) {
+            if (selectedStartDate) {
+                params.set('start_date', selectedStartDate);
+            }
+            if (selectedEndDate) {
+                params.set('end_date', selectedEndDate);
+            }
+            return;
+        }
+
+        params.set('period', selectedPeriod);
+    }
+
+    document.getElementById('searchForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const ticker = document.getElementById('tickerInput').value.toUpperCase();
+        const params = new URLSearchParams();
+        appendHistoryParams(params);
+        window.location.href = '/stock/' + ticker + '?' + params.toString();
+    });
+
     const ctx = document.getElementById('stockChart').getContext('2d');
     const myChart = new Chart(ctx, {
         type: 'line', 
@@ -370,9 +401,9 @@
 
         try {
             const params = new URLSearchParams({
-                predict_len: pricePredictLenInput.value,
-                period: selectedPeriod
+                predict_len: pricePredictLenInput.value
             });
+            appendHistoryParams(params);
             const payload = await fetchJsonPayload(
                 `${predictionApiUrl}?${params.toString()}`,
                 '価格予測の取得に失敗しました。'
