@@ -251,6 +251,17 @@
                     pointRadius: 0,
                     pointHitRadius: 10
                 },
+                {
+                    label: '実績（予測期間）',
+                    data: chartData.actual_future_data,
+                    borderColor: 'rgba(40, 167, 69, 1)',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.1,
+                    pointRadius: 1,
+                    pointHitRadius: 10,
+                    spanGaps: false
+                },
                 { 
                     label: '予測 (リターンLSTM)',
                     data: chartData.prediction_data_lstm, 
@@ -384,8 +395,9 @@
         myChart.data.datasets[0].data = chartData.data;
         myChart.data.datasets[1].data = chartData.ema_12_data;
         myChart.data.datasets[2].data = chartData.ema_26_data;
-        myChart.data.datasets[3].data = chartData.prediction_data_lstm;
-        myChart.data.datasets[4].data = chartData.prediction_data_ridge;
+        myChart.data.datasets[3].data = chartData.actual_future_data;
+        myChart.data.datasets[4].data = chartData.prediction_data_lstm;
+        myChart.data.datasets[5].data = chartData.prediction_data_ridge;
         myChart.update();
 
         predictedPriceLstm.textContent = formatPredictionPrice(lstmPrice);

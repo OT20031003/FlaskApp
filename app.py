@@ -172,6 +172,7 @@ def build_chart_data(stock_ticker: str, current_price: float, df: pd.DataFrame) 
         "data": price_data,
         "ema_12_data": ema_12_data,
         "ema_26_data": ema_26_data,
+        "actual_future_data": empty_prediction_data.copy(),
         "prediction_data_lstm": empty_prediction_data.copy(),
         "prediction_data_ridge": empty_prediction_data.copy(),
         "ticker": stock_ticker,
@@ -179,7 +180,26 @@ def build_chart_data(stock_ticker: str, current_price: float, df: pd.DataFrame) 
     }
 
 
+def build_actual_future_data(stock, prediction_labels: list[str]) -> list[Optional[float]]:
+    if not prediction_labels:
+        return []
+
+    history_end = (datetime.now().date() + timedelta(days=1)).isoformat()
+    actual_df = stock.history(start=prediction_labels[0], end=history_end)
+    if actual_df.empty or "Close" not in actual_df:
+        return [None] * len(prediction_labels)
+
+    close_map = {
+        index_value.strftime("%Y-%m-%d"): (
+            round(float(close_value), 2) if pd.notna(close_value) else None
+        )
+        for index_value, close_value in actual_df["Close"].items()
+    }
+    return [close_map.get(label) for label in prediction_labels]
+
+
 def build_prediction_response(
+    stock,
     stock_ticker: str,
     current_price: float,
     df: pd.DataFrame,
@@ -213,6 +233,7 @@ def build_prediction_response(
     historical_data = df["Close"].tolist()
     ema_12_data = df["Close"].ewm(span=12, adjust=False).mean().tolist()
     ema_26_data = df["Close"].ewm(span=26, adjust=False).mean().tolist()
+    actual_future_data = build_actual_future_data(stock, prediction_labels)
     if historical_data:
         prediction_data_points_lstm = [None] * (len(historical_data) - 1) + [
             historical_data[-1]
@@ -229,6 +250,7 @@ def build_prediction_response(
         "data": historical_data + [None] * len(prediction_labels),
         "ema_12_data": ema_12_data + [None] * len(prediction_labels),
         "ema_26_data": ema_26_data + [None] * len(prediction_labels),
+        "actual_future_data": [None] * len(historical_data) + actual_future_data,
         "prediction_data_lstm": prediction_data_points_lstm,
         "prediction_data_ridge": prediction_data_points_ridge,
         "ticker": stock_ticker,
@@ -611,6 +633,7 @@ def predict_stock(
                 content={"error": "指定した期間の株価データが見つかりませんでした。"},
             )
         prediction_response = build_prediction_response(
+            stock,
             stock_ticker,
             current_price,
             df,
