@@ -13,10 +13,10 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from config import APP_SECRET_KEY, DEFAULT_PREDICT_LEN, DEFAULT_TICKER
 from predictors import (
-    predict_direction_with_lgbm,
     predict_with_return_lstm,
     predict_with_ridge,
 )
+from predictors_direction_lgbm import predict_direction_with_lgbm
 from services import (
     get_db_connection,
     get_gemini_description,
@@ -27,6 +27,7 @@ from services import (
 
 BASE_DIR = Path(__file__).resolve().parent
 SHARE_EPSILON = 1e-9
+DIRECTION_HISTORY_PERIOD = "10y"
 HISTORY_PERIODS = {
     "5d": "5日",
     "1mo": "一か月",
@@ -661,7 +662,12 @@ def predict_stock_direction(ticker: str, predict_len: Optional[str] = None):
             )
 
         predict_len_value = parse_predict_len(predict_len)
-        df = stock.history(period="2y")
+        df = stock.history(period=DIRECTION_HISTORY_PERIOD)
+        if df.empty:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "方向予測に必要な株価データが見つかりませんでした。"},
+            )
         direction_response = predict_direction_with_lgbm(
             df,
             predict_len=predict_len_value,

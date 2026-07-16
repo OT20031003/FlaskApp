@@ -81,7 +81,7 @@
                     <h6 class="mb-2">方向予測 (LightGBM)</h6>
                     <p class="card-text mb-2">判定: <span id="directionPrediction" class="badge bg-secondary">N/A</span></p>
                     <p class="card-text mb-1">上昇確率: <strong id="directionProbability">N/A</strong></p>
-                    <p class="card-text mb-1">テスト精度: <strong id="directionAccuracy">N/A</strong></p>
+                    <p class="card-text mb-1">検証精度（平均）: <strong id="directionAccuracy">N/A</strong></p>
                     <p class="card-text mb-0">シグナル: <strong id="directionSignal">N/A</strong></p>
                     <hr>
                     <h6 class="mb-2">重要特徴量 Top 10</h6>
@@ -115,7 +115,7 @@
 
                 <form id="directionPredictionForm" class="row g-2 align-items-center mb-3">
                     <div class="col-auto">
-                         <label for="predict_len_direction">方向予測する日付:</label>
+                         <label for="predict_len_direction">予測期間（営業日）:</label>
                     </div>
                     <div class="col-auto">
                         <input type="number" id="predict_len_direction" name="predict_len" class="form-control" value="{{ predict_len }}" min="1">
@@ -319,6 +319,29 @@
         return 'bg-secondary';
     }
 
+    function getDirectionLabel(direction) {
+        if (direction === 'UP') {
+            return '上昇';
+        }
+        if (direction === 'DOWN') {
+            return '下降';
+        }
+        if (direction === 'MODEL_INVALID') {
+            return '検証基準未達';
+        }
+        return '中立';
+    }
+
+    function getMetricMean(metric) {
+        if (metric === null || metric === undefined) {
+            return 'N/A';
+        }
+        if (typeof metric === 'object') {
+            return metric.mean ?? 'N/A';
+        }
+        return metric;
+    }
+
     function renderTopFeatures(topFeatures) {
         directionTopFeaturesBody.innerHTML = '';
 
@@ -355,20 +378,22 @@
 
     function updateDirectionView(directionPayload) {
         const predictedDirection = directionPayload.predicted_direction || 'NEUTRAL';
-        const accuracy = directionPayload.metrics && directionPayload.metrics.accuracy !== undefined
-            ? directionPayload.metrics.accuracy
-            : 'N/A';
+        const accuracy = getMetricMean(directionPayload.metrics?.accuracy);
 
         directionPrediction.className = `badge ${getDirectionBadgeClass(predictedDirection)}`;
-        directionPrediction.textContent = predictedDirection === 'UP'
-            ? '上昇'
-            : predictedDirection === 'DOWN'
-                ? '下降'
-                : '中立';
+        directionPrediction.textContent = getDirectionLabel(predictedDirection);
         directionProbability.textContent = formatPercent(directionPayload.probability_up);
         directionAccuracy.textContent = formatPercent(accuracy);
         directionSignal.textContent = directionPayload.signal || 'N/A';
         renderTopFeatures(directionPayload.top_features);
+
+        if (directionPayload.reason) {
+            directionPredictionError.className = 'alert alert-warning';
+            directionPredictionError.textContent = `方向予測を確定できませんでした: ${directionPayload.reason}`;
+        } else if (directionPayload.model_valid === false) {
+            directionPredictionError.className = 'alert alert-warning';
+            directionPredictionError.textContent = 'モデルが検証基準を満たしていないため、売買判定は保留です。';
+        }
     }
 
     async function fetchJsonPayload(url, defaultErrorMessage) {
@@ -437,7 +462,7 @@
 
     directionPredictionForm.addEventListener('submit', async function(e) {
         e.preventDefault();
-        directionPredictionError.classList.add('d-none');
+        directionPredictionError.className = 'alert alert-danger d-none';
         directionPredictionError.textContent = '';
         directionPredictButton.disabled = true;
         directionPredictButton.textContent = '予測中...';
