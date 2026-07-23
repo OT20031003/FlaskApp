@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}{{ ticker }} デイトレ予測{% endblock %}
+
+{% block content %}
+<style>
+    .trade-hero { background: linear-gradient(135deg, #111827, #1e3a5f); color: white; }
+    .metric-value { font-size: 1.35rem; font-weight: 700; }
+    .chart-wrap { position: relative; height: 520px; }
+    @media (max-width: 768px) { .chart-wrap { height: 390px; } }
+</style>
+
+<div class="trade-hero rounded-4 p-4 mb-4 shadow-sm">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div>
+            <div class="text-info small fw-semibold">INTRADAY FORECAST</div>
+            <h1 class="h3 mb-1"><span id="headingTicker">{{ ticker }}</span> デイトレ予測</h1>
+            <div class="text-white-50">当日チャートにinterval単位の予測を重ねて表示</div>
+        </div>
+        <form id="tickerForm" class="d-flex gap-2">
+            <input id="tickerInput" class="form-control" value="{{ ticker }}" aria-label="ティッカー" required>
+            <button class="btn btn-info text-nowrap" type="submit">銘柄変更</button>
+        </form>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-xl-9">
+        <div class="card shadow-sm border-0">
+            <div class="card-body">
+                <form id="predictionForm" class="row g-3 align-items-end mb-3">
+                    <div class="col-sm-5">
+                        <label for="interval" class="form-label">足幅</label>
+                        <select id="interval" class="form-select">
+                            {% for value, detail in intervals.items() %}
+                            <option value="{{ value }}" {% if value == selected_interval %}selected{% endif %}>
+                                {{ detail.label }}（最大 {{ detail.period }}）
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-sm-4">
+                        <label for="steps" class="form-label">予測する本数 n</label>
+                        <input id="steps" type="number" min="1" max="120" value="12" class="form-control">
+                    </div>
+                    <div class="col-sm-3 d-grid">
+                        <button id="predictButton" class="btn btn-primary" type="submit">予測を更新</button>
+                    </div>
+                </form>
+                <div id="errorBox" class="alert alert-danger d-none"></div>
+                <div id="loadingBox" class="text-center py-5">
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <div class="mt-2 text-muted">日中足を取得し、モデルを学習しています…</div>
+                </div>
+                <div id="chartBox" class="chart-wrap d-none"><canvas id="tradeChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-3">
+        <div class="card shadow-sm border-0 mb-3"><div class="card-body">
+            <div class="text-muted small">現在値</div><div id="lastPrice" class="metric-value">—</div>
+        </div></div>
+        <div class="card shadow-sm border-0 mb-3"><div class="card-body">
+            <div id="horizonLabel" class="text-muted small">予測終点</div><div id="predictedPrice" class="metric-value">—</div>
+            <div id="predictedChange" class="small mt-1">—</div>
+        </div></div>
+        <div class="card shadow-sm border-0"><div class="card-body">
+            <div class="text-muted small mb-2">モデル情報</div>
+            <dl class="row small mb-0">
+                <dt class="col-6">学習日数</dt><dd id="trainingDays" class="col-6 text-end">—</dd>
+                <dt class="col-6">学習件数</dt><dd id="trainingRows" class="col-6 text-end">—</dd>
+                <dt class="col-6">基準時刻</dt><dd id="asOf" class="col-6 text-end">—</dd>
+            </dl>
+            <hr><p class="small text-muted mb-0">予測は統計的推定であり、利益を保証しません。実際の注文判断には流動性やニュースも考慮してください。</p>
+        </div></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let chart = null;
+let activeTicker = {{ ticker | tojson }};
+const apiTemplate = {{ request.url_for('daytrade_prediction', ticker='__TICKER__') | string | tojson }};
+const form = document.getElementById('predictionForm');
+const button = document.getElementById('predictButton');
+const loading = document.getElementById('loadingBox');
+const chartBox = document.getElementById('chartBox');
+const errorBox = document.getElementById('errorBox');
+
+function money(value) { return Number(value).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4}); }
+function shortTime(value) { return new Intl.DateTimeFormat('ja-JP', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}).format(new Date(value)); }
+
+async function loadPrediction() {
+    button.disabled = true; loading.classList.remove('d-none'); chartBox.classList.add('d-none'); errorBox.classList.add('d-none');
+    const interval = document.getElementById('interval').value;
+    const steps = document.getElementById('steps').value;
+    try {
+        const apiUrl = apiTemplate.replace('__TICKER__', encodeURIComponent(activeTicker));
+        const response = await fetch(`${apiUrl}?interval=${encodeURIComponent(interval)}&steps=${encodeURIComponent(steps)}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || '予測を取得できませんでした。');
+        render(payload);
+        history.replaceState(null, '', `/daytrade/${encodeURIComponent(activeTicker)}?interval=${interval}`);
+    } catch (error) {
+        errorBox.textContent = error.message; errorBox.classList.remove('d-none');
+    } finally { button.disabled = false; loading.classList.add('d-none'); }
+}
+
+function render(data) {
+    const change = (data.predicted_price / data.last_price - 1) * 100;
+    document.getElementById('lastPrice').textContent = money(data.last_price);
+    document.getElementById('predictedPrice').textContent = money(data.predicted_price);
+    document.getElementById('predictedChange').textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+    document.getElementById('predictedChange').className = `small mt-1 ${change >= 0 ? 'text-success' : 'text-danger'}`;
+    document.getElementById('horizonLabel').textContent = `${data.steps}本先（${data.horizon_minutes}分後）`;
+    document.getElementById('trainingDays').textContent = `${data.training_days}日`;
+    document.getElementById('trainingRows').textContent = data.training_rows.toLocaleString();
+    document.getElementById('asOf').textContent = shortTime(data.as_of);
+    const config = {
+        type: 'line', data: { labels: data.labels.map(shortTime), datasets: [
+            {label: '実績終値', data: data.actual_close, borderColor: '#0891b2', pointRadius: 1, borderWidth: 2, tension: .12},
+            {label: '予測', data: data.prediction, borderColor: '#f43f5e', backgroundColor: 'rgba(244,63,94,.1)', borderDash: [7,5], pointRadius: 2, borderWidth: 2, tension: .12, fill: true},
+            {label: '出来高', data: data.volume, type: 'bar', yAxisID: 'volume', backgroundColor: 'rgba(100,116,139,.22)', borderWidth: 0}
+        ]}, options: {responsive:true, maintainAspectRatio:false, interaction:{mode:'index', intersect:false}, scales:{
+            x:{ticks:{maxTicksLimit:12}}, y:{position:'left'}, volume:{position:'right', beginAtZero:true, grid:{display:false}, ticks:{display:false}, suggestedMax: Math.max(...data.volume.filter(v => v !== null)) * 4}
+        }}
+    };
+    if (chart) chart.destroy();
+    chart = new Chart(document.getElementById('tradeChart'), config); chartBox.classList.remove('d-none');
+}
+
+form.addEventListener('submit', event => { event.preventDefault(); loadPrediction(); });
+document.getElementById('tickerForm').addEventListener('submit', event => {
+    event.preventDefault(); activeTicker = document.getElementById('tickerInput').value.trim().toUpperCase();
+    if (!activeTicker) return; document.getElementById('headingTicker').textContent = activeTicker; loadPrediction();
+});
+loadPrediction();
+</script>
+{% endblock %}

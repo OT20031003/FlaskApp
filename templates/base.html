@@ -15,6 +15,9 @@
                     <li class="nav-item">
                         <a class="nav-link" href="{{ request.url_for('portfolio_page') }}">ポートフォリオ</a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ request.url_for('daytrade', ticker=(chart_data_py.ticker if chart_data_py is defined else (ticker if ticker is defined else 'NVDA'))) }}">デイトレ予測</a>
+                    </li>
                 </ul>
             </div>
         </div>

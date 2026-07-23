@@ -23,6 +23,12 @@ from services import (
     get_price_snapshots,
     get_stock_data,
 )
+from intraday import (
+    INTRADAY_INTERVALS,
+    build_intraday_payload,
+    parse_steps,
+    validate_interval,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -41,6 +47,18 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key=APP_SECRET_KEY)
+
+
+def get_intraday_data(ticker: str, interval: str) -> pd.DataFrame:
+    settings = INTRADAY_INTERVALS[interval]
+    return yf.download(
+        ticker,
+        period=settings["period"],
+        interval=interval,
+        auto_adjust=False,
+        progress=False,
+        prepost=False,
+    )
 
 
 def add_flash_message(request: Request, message: str, category: str) -> None:
@@ -597,6 +615,44 @@ def index(
             "history_periods": HISTORY_PERIODS,
         },
     )
+
+
+@app.get("/daytrade/{ticker}", response_class=HTMLResponse, name="daytrade")
+def daytrade(request: Request, ticker: str, interval: Optional[str] = None):
+    stock_ticker = ticker.upper()
+    selected_interval = validate_interval(interval)
+    return templates.TemplateResponse(
+        request=request,
+        name="daytrade.html",
+        context={
+            "request": request,
+            "ticker": stock_ticker,
+            "selected_interval": selected_interval,
+            "intervals": INTRADAY_INTERVALS,
+        },
+    )
+
+
+@app.get("/api/daytrade/{ticker}", name="daytrade_prediction")
+def daytrade_prediction(
+    ticker: str,
+    interval: Optional[str] = None,
+    steps: Optional[str] = None,
+):
+    stock_ticker = ticker.upper()
+    selected_interval = validate_interval(interval)
+    prediction_steps = parse_steps(steps)
+    try:
+        df = get_intraday_data(stock_ticker, selected_interval)
+        payload = build_intraday_payload(
+            stock_ticker, df, selected_interval, prediction_steps
+        )
+        return JSONResponse(content=sanitize_for_json(payload))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"日中予測の生成に失敗しました: {exc}"},
+        )
 
 
 @app.get("/api/stock/{ticker}/predict", name="predict_stock")
