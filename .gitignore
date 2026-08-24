@@ -1,2 +1,4 @@
 password.txt
 geminiapi.txt
+__pycache__/
+*.pyc
