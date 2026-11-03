@@ -35,20 +35,28 @@ BASE_DIR = Path(__file__).resolve().parent
 SHARE_EPSILON = 1e-9
 DIRECTION_HISTORY_PERIOD = "10y"
 CHART_INTERVALS = {
-    "1d": {"label": "日足", "period": "1y", "resample_rule": None},
+    "1d": {
+        "label": "日足",
+        "display_days": 365,
+        "warmup_days": 120,
+        "resample_rule": None,
+    },
     "1wk": {
         "label": "週足",
-        "period": "5y",
+        "display_days": 365 * 5,
+        "warmup_days": 420,
         "resample_rule": pd.offsets.Week(weekday=4),
     },
     "1mo": {
         "label": "月足",
-        "period": "10y",
+        "display_days": 365 * 10,
+        "warmup_days": 1900,
         "resample_rule": pd.offsets.MonthEnd(),
     },
     "1y": {
         "label": "年足",
-        "period": "max",
+        "display_days": None,
+        "warmup_days": 365 * 55,
         "resample_rule": pd.offsets.YearEnd(),
     },
 }
@@ -157,6 +165,23 @@ def aggregate_history_dataframe(df: pd.DataFrame, interval: str) -> pd.DataFrame
     return aggregated.dropna(subset=["Open", "High", "Low", "Close"])
 
 
+def add_moving_average_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for window in (5, 25, 50):
+        df[f"MA{window}"] = df["Close"].rolling(
+            window=window,
+            min_periods=window,
+        ).mean()
+    return df
+
+
+def filter_history_from_date(df: pd.DataFrame, start_date: date) -> pd.DataFrame:
+    start_timestamp = pd.Timestamp(start_date)
+    if df.index.tz is not None:
+        start_timestamp = start_timestamp.tz_localize(df.index.tz)
+    return df.loc[df.index >= start_timestamp]
+
+
 def get_history_dataframe(
     stock,
     interval: Optional[str],
@@ -171,33 +196,47 @@ def get_history_dataframe(
         range_error,
     ) = resolve_history_params(interval, start_date, end_date)
 
-    default_period = CHART_INTERVALS[selected_interval]["period"]
-
     if range_error:
-        return (
-            aggregate_history_dataframe(
-                stock.history(period=default_period), selected_interval
-            ),
-            selected_interval,
-            None,
-            None,
-            False,
-            range_error,
-        )
+        resolved_start_date = None
+        resolved_end_date = None
+        is_custom_range = False
 
-    if is_custom_range:
-        history_kwargs = {}
-        if resolved_start_date:
-            history_kwargs["start"] = resolved_start_date
+    interval_settings = CHART_INTERVALS[selected_interval]
+    if resolved_start_date:
+        visible_start_date = datetime.strptime(
+            resolved_start_date, "%Y-%m-%d"
+        ).date()
+    elif is_custom_range:
+        visible_start_date = None
+    elif interval_settings["display_days"] is not None:
+        visible_start_date = date.today() - timedelta(
+            days=interval_settings["display_days"]
+        )
+    else:
+        visible_start_date = None
+
+    if visible_start_date:
+        fetch_start_date = visible_start_date - timedelta(
+            days=interval_settings["warmup_days"]
+        )
+        history_kwargs = {"start": fetch_start_date.isoformat()}
         if resolved_end_date:
             history_kwargs["end"] = (
                 datetime.strptime(resolved_end_date, "%Y-%m-%d") + timedelta(days=1)
             ).strftime("%Y-%m-%d")
         df = stock.history(**history_kwargs)
     else:
-        df = stock.history(period=default_period)
+        df = stock.history(period="max")
+        if resolved_end_date and not df.empty:
+            end_timestamp = pd.Timestamp(resolved_end_date) + pd.Timedelta(days=1)
+            if df.index.tz is not None:
+                end_timestamp = end_timestamp.tz_localize(df.index.tz)
+            df = df.loc[df.index < end_timestamp]
 
     df = aggregate_history_dataframe(df, selected_interval)
+    df = add_moving_average_columns(df)
+    if visible_start_date and not df.empty:
+        df = filter_history_from_date(df, visible_start_date)
 
     return (
         df,
@@ -205,7 +244,7 @@ def get_history_dataframe(
         resolved_start_date,
         resolved_end_date,
         is_custom_range,
-        None,
+        range_error,
     )
 
 
@@ -247,12 +286,25 @@ def build_ohlc_data(df: pd.DataFrame) -> list[dict[str, object]]:
     return ohlc_data
 
 
+def build_moving_average_data(df: pd.DataFrame) -> dict[str, list[float]]:
+    moving_averages = {}
+    for window in (5, 25, 50):
+        column = f"MA{window}"
+        if column in df.columns:
+            series = df[column]
+        else:
+            series = df["Close"].rolling(window=window, min_periods=window).mean()
+        moving_averages[f"ma_{window}_data"] = series.tolist()
+    return moving_averages
+
+
 def build_chart_data(stock_ticker: str, current_price: float, df: pd.DataFrame) -> dict:
     labels = df.index.strftime("%Y-%m-%d").tolist()
     price_data = df["Close"].tolist()
     ohlc_data = build_ohlc_data(df)
     ema_12_data = df["Close"].ewm(span=12, adjust=False).mean().tolist()
     ema_26_data = df["Close"].ewm(span=26, adjust=False).mean().tolist()
+    moving_average_data = build_moving_average_data(df)
     empty_prediction_data = [None] * len(labels)
 
     return {
@@ -261,6 +313,7 @@ def build_chart_data(stock_ticker: str, current_price: float, df: pd.DataFrame) 
         "ohlc_data": ohlc_data,
         "ema_12_data": ema_12_data,
         "ema_26_data": ema_26_data,
+        **moving_average_data,
         "actual_future_data": empty_prediction_data.copy(),
         "prediction_data_lstm": empty_prediction_data.copy(),
         "prediction_data_ridge": empty_prediction_data.copy(),
@@ -323,6 +376,10 @@ def build_prediction_response(
     ohlc_data = build_ohlc_data(df)
     ema_12_data = df["Close"].ewm(span=12, adjust=False).mean().tolist()
     ema_26_data = df["Close"].ewm(span=26, adjust=False).mean().tolist()
+    moving_average_data = {
+        key: values + [None] * len(prediction_labels)
+        for key, values in build_moving_average_data(df).items()
+    }
     actual_future_data = build_actual_future_data(stock, prediction_labels)
     if historical_data:
         prediction_data_points_lstm = [None] * (len(historical_data) - 1) + [
@@ -341,6 +398,7 @@ def build_prediction_response(
         "ohlc_data": ohlc_data,
         "ema_12_data": ema_12_data + [None] * len(prediction_labels),
         "ema_26_data": ema_26_data + [None] * len(prediction_labels),
+        **moving_average_data,
         "actual_future_data": [None] * len(historical_data) + actual_future_data,
         "prediction_data_lstm": prediction_data_points_lstm,
         "prediction_data_ridge": prediction_data_points_ridge,

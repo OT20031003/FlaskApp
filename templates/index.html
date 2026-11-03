@@ -5,6 +5,7 @@
 {% block content %}
 <style>
     .chart-container { position: relative; height: 560px; }
+    .ma-swatch { display: inline-block; width: 24px; border-top: 1px solid; vertical-align: middle; }
     @media (max-width: 768px) { .chart-container { height: 430px; } }
 </style>
 <div class="row">
@@ -54,7 +55,13 @@
             </div>
         </form>
 
-        <div class="chart-container mt-3">
+        <div class="d-flex justify-content-center gap-3 small text-muted mt-3" aria-label="移動平均線の凡例">
+            <span><span class="ma-swatch" style="border-color: rgba(13, 110, 253, 0.6);"></span> MA5: <strong id="ma5Latest">N/A</strong></span>
+            <span><span class="ma-swatch" style="border-color: rgba(255, 159, 64, 0.65);"></span> MA25: <strong id="ma25Latest">N/A</strong></span>
+            <span><span class="ma-swatch" style="border-color: rgba(111, 66, 193, 0.6);"></span> MA50: <strong id="ma50Latest">N/A</strong></span>
+        </div>
+
+        <div class="chart-container mt-1">
             <canvas id="stockChart"></canvas>
         </div>
     </div>
@@ -242,6 +249,63 @@
         ));
     }
 
+    function getHistoricalSeries(data, key) {
+        const series = Array.isArray(data[key]) ? data[key] : [];
+        return series.slice(0, getOhlcData(data).length);
+    }
+
+    function buildMovingAverageSeries(data) {
+        return [
+            {
+                label: 'MA5',
+                values: getHistoricalSeries(data, 'ma_5_data'),
+                color: 'rgba(13, 110, 253, 0.55)'
+            },
+            {
+                label: 'MA25',
+                values: getHistoricalSeries(data, 'ma_25_data'),
+                color: 'rgba(255, 159, 64, 0.6)'
+            },
+            {
+                label: 'MA50',
+                values: getHistoricalSeries(data, 'ma_50_data'),
+                color: 'rgba(111, 66, 193, 0.55)'
+            }
+        ];
+    }
+
+    function getLatestFiniteValue(values) {
+        for (let index = values.length - 1; index >= 0; index -= 1) {
+            if (Number.isFinite(values[index])) {
+                return values[index];
+            }
+        }
+        return null;
+    }
+
+    function formatMovingAverageValue(value) {
+        if (!Number.isFinite(value)) {
+            return 'N/A';
+        }
+        return value.toLocaleString('ja-JP', {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function updateMovingAverageLegend(data) {
+        const movingAverages = buildMovingAverageSeries(data);
+        document.getElementById('ma5Latest').textContent = formatMovingAverageValue(
+            getLatestFiniteValue(movingAverages[0].values)
+        );
+        document.getElementById('ma25Latest').textContent = formatMovingAverageValue(
+            getLatestFiniteValue(movingAverages[1].values)
+        );
+        document.getElementById('ma50Latest').textContent = formatMovingAverageValue(
+            getLatestFiniteValue(movingAverages[2].values)
+        );
+    }
+
     const candlestickRenderer = {
         id: 'candlestickRenderer',
         beforeDatasetsDraw(chart) {
@@ -290,6 +354,43 @@
             });
 
             ctx.restore();
+        },
+        afterDatasetsDraw(chart) {
+            const candleDataset = chart.data.datasets[0];
+            const {ctx, chartArea, scales: {x, y}} = chart;
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(chartArea.left, y.top, chartArea.width, y.height);
+            ctx.clip();
+            ctx.lineWidth = 1;
+            ctx.lineJoin = 'round';
+
+            candleDataset.movingAverageSeries.forEach(series => {
+                let hasPreviousPoint = false;
+                ctx.beginPath();
+                ctx.strokeStyle = series.color;
+
+                series.values.forEach((value, index) => {
+                    if (!Number.isFinite(value)) {
+                        hasPreviousPoint = false;
+                        return;
+                    }
+
+                    const xPixel = x.getPixelForValue(index);
+                    const yPixel = y.getPixelForValue(value);
+                    if (hasPreviousPoint) {
+                        ctx.lineTo(xPixel, yPixel);
+                    } else {
+                        ctx.moveTo(xPixel, yPixel);
+                        hasPreviousPoint = true;
+                    }
+                });
+
+                ctx.stroke();
+            });
+
+            ctx.restore();
         }
     };
 
@@ -304,6 +405,7 @@
                     label: `${chartData.ticker} のローソク足`,
                     data: buildCandlestickRanges(chartData),
                     ohlcData: getOhlcData(chartData),
+                    movingAverageSeries: buildMovingAverageSeries(chartData),
                     backgroundColor: 'rgba(0, 0, 0, 0)',
                     borderColor: 'rgba(0, 0, 0, 0)',
                     borderWidth: 0,
@@ -389,6 +491,7 @@
         },
         plugins: [candlestickRenderer]
     });
+    updateMovingAverageLegend(chartData);
 
     function formatPredictionPrice(value) {
         return value === 'N/A' ? 'N/A' : `$${value}`;
@@ -511,8 +614,10 @@
         myChart.data.labels = getCandlestickLabels(chartData);
         myChart.data.datasets[0].data = buildCandlestickRanges(chartData);
         myChart.data.datasets[0].ohlcData = getOhlcData(chartData);
+        myChart.data.datasets[0].movingAverageSeries = buildMovingAverageSeries(chartData);
         myChart.data.datasets[1].data = buildVolumeData(chartData);
         myChart.data.datasets[1].backgroundColor = buildVolumeColors(chartData);
+        updateMovingAverageLegend(chartData);
         myChart.update();
 
         predictedPriceLstm.textContent = formatPredictionPrice(lstmPrice);
