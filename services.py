@@ -159,9 +159,12 @@ def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
         hist = stock.history(period="5d")
-        if hist.empty:
+        if hist.empty or "Close" not in hist:
             return None, None
-        return stock, hist["Close"].iloc[-1]
+        valid_close = hist["Close"].dropna()
+        if valid_close.empty:
+            return None, None
+        return stock, float(valid_close.iloc[-1])
     except Exception:
         return None, None
 

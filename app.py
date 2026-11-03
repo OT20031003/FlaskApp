@@ -34,14 +34,23 @@ from intraday import (
 BASE_DIR = Path(__file__).resolve().parent
 SHARE_EPSILON = 1e-9
 DIRECTION_HISTORY_PERIOD = "10y"
-HISTORY_PERIODS = {
-    "5d": "5日",
-    "1mo": "一か月",
-    "6mo": "半年",
-    "1y": "一年",
-    "3y": "3年",
-    "5y": "5年",
-    "10y": "10年",
+CHART_INTERVALS = {
+    "1d": {"label": "日足", "period": "1y", "resample_rule": None},
+    "1wk": {
+        "label": "週足",
+        "period": "5y",
+        "resample_rule": pd.offsets.Week(weekday=4),
+    },
+    "1mo": {
+        "label": "月足",
+        "period": "10y",
+        "resample_rule": pd.offsets.MonthEnd(),
+    },
+    "1y": {
+        "label": "年足",
+        "period": "max",
+        "resample_rule": pd.offsets.YearEnd(),
+    },
 }
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -78,10 +87,10 @@ def parse_predict_len(predict_len: Optional[str]) -> int:
         return DEFAULT_PREDICT_LEN
 
 
-def parse_history_period(period: Optional[str]) -> str:
-    if period in HISTORY_PERIODS:
-        return period
-    return "1y"
+def parse_chart_interval(interval: Optional[str]) -> str:
+    if interval in CHART_INTERVALS:
+        return interval
+    return "1d"
 
 
 def parse_history_date(value: Optional[str]) -> Optional[date]:
@@ -94,51 +103,82 @@ def parse_history_date(value: Optional[str]) -> Optional[date]:
 
 
 def resolve_history_params(
-    period: Optional[str],
+    interval: Optional[str],
     start_date: Optional[str],
     end_date: Optional[str],
 ) -> tuple[str, Optional[str], Optional[str], bool, Optional[str]]:
-    selected_period = parse_history_period(period)
+    selected_interval = parse_chart_interval(interval)
     parsed_start = parse_history_date(start_date)
     parsed_end = parse_history_date(end_date)
 
     if start_date and parsed_start is None:
-        return selected_period, None, None, False, "開始日の形式が不正です。"
+        return selected_interval, None, None, False, "開始日の形式が不正です。"
     if end_date and parsed_end is None:
-        return selected_period, None, None, False, "終了日の形式が不正です。"
+        return selected_interval, None, None, False, "終了日の形式が不正です。"
     if parsed_start and parsed_end and parsed_start > parsed_end:
-        return selected_period, None, None, False, "開始日は終了日以前にしてください。"
+        return selected_interval, None, None, False, "開始日は終了日以前にしてください。"
 
     if parsed_start or parsed_end:
         return (
-            selected_period,
+            selected_interval,
             parsed_start.isoformat() if parsed_start else None,
             parsed_end.isoformat() if parsed_end else None,
             True,
             None,
         )
 
-    return selected_period, None, None, False, None
+    return selected_interval, None, None, False, None
+
+
+def aggregate_history_dataframe(df: pd.DataFrame, interval: str) -> pd.DataFrame:
+    resample_rule = CHART_INTERVALS[interval]["resample_rule"]
+    if df.empty:
+        return df
+
+    required_columns = ["Open", "High", "Low", "Close"]
+    df = df.dropna(subset=required_columns).copy()
+    if df.empty or resample_rule is None:
+        return df
+
+    aggregations = {
+        "Open": "first",
+        "High": "max",
+        "Low": "min",
+        "Close": "last",
+    }
+    if "Volume" in df.columns:
+        aggregations["Volume"] = "sum"
+    if "Dividends" in df.columns:
+        aggregations["Dividends"] = "sum"
+    if "Stock Splits" in df.columns:
+        aggregations["Stock Splits"] = "sum"
+
+    aggregated = df.resample(resample_rule).agg(aggregations)
+    return aggregated.dropna(subset=["Open", "High", "Low", "Close"])
 
 
 def get_history_dataframe(
     stock,
-    period: Optional[str],
+    interval: Optional[str],
     start_date: Optional[str],
     end_date: Optional[str],
 ) -> tuple[pd.DataFrame, str, Optional[str], Optional[str], bool, Optional[str]]:
     (
-        selected_period,
+        selected_interval,
         resolved_start_date,
         resolved_end_date,
         is_custom_range,
         range_error,
-    ) = resolve_history_params(period, start_date, end_date)
+    ) = resolve_history_params(interval, start_date, end_date)
+
+    default_period = CHART_INTERVALS[selected_interval]["period"]
 
     if range_error:
         return (
-            stock.history(period=selected_period),
-            selected_period,
+            aggregate_history_dataframe(
+                stock.history(period=default_period), selected_interval
+            ),
+            selected_interval,
             None,
             None,
             False,
@@ -155,11 +195,13 @@ def get_history_dataframe(
             ).strftime("%Y-%m-%d")
         df = stock.history(**history_kwargs)
     else:
-        df = stock.history(period=selected_period)
+        df = stock.history(period=default_period)
+
+    df = aggregate_history_dataframe(df, selected_interval)
 
     return (
         df,
-        selected_period,
+        selected_interval,
         resolved_start_date,
         resolved_end_date,
         is_custom_range,
@@ -179,9 +221,36 @@ def format_shares(shares: float) -> str:
     return formatted or "0"
 
 
+def build_ohlc_data(df: pd.DataFrame) -> list[dict[str, object]]:
+    ohlc_data = []
+    columns = ["Open", "High", "Low", "Close"]
+    if "Volume" in df.columns:
+        columns.append("Volume")
+
+    for index_value, row in df[columns].iterrows():
+        if row[["Open", "High", "Low", "Close"]].isna().any():
+            continue
+        ohlc_data.append(
+            {
+                "x": index_value.strftime("%Y-%m-%d"),
+                "o": float(row["Open"]),
+                "h": float(row["High"]),
+                "l": float(row["Low"]),
+                "c": float(row["Close"]),
+                "v": (
+                    float(row["Volume"])
+                    if "Volume" in row and pd.notna(row["Volume"])
+                    else 0.0
+                ),
+            }
+        )
+    return ohlc_data
+
+
 def build_chart_data(stock_ticker: str, current_price: float, df: pd.DataFrame) -> dict:
     labels = df.index.strftime("%Y-%m-%d").tolist()
     price_data = df["Close"].tolist()
+    ohlc_data = build_ohlc_data(df)
     ema_12_data = df["Close"].ewm(span=12, adjust=False).mean().tolist()
     ema_26_data = df["Close"].ewm(span=26, adjust=False).mean().tolist()
     empty_prediction_data = [None] * len(labels)
@@ -189,6 +258,7 @@ def build_chart_data(stock_ticker: str, current_price: float, df: pd.DataFrame) 
     return {
         "labels": labels,
         "data": price_data,
+        "ohlc_data": ohlc_data,
         "ema_12_data": ema_12_data,
         "ema_26_data": ema_26_data,
         "actual_future_data": empty_prediction_data.copy(),
@@ -250,6 +320,7 @@ def build_prediction_response(
     prediction_data_ridge = ridge_prediction_series.tolist()
     historical_labels = df.index.strftime("%Y-%m-%d").tolist()
     historical_data = df["Close"].tolist()
+    ohlc_data = build_ohlc_data(df)
     ema_12_data = df["Close"].ewm(span=12, adjust=False).mean().tolist()
     ema_26_data = df["Close"].ewm(span=26, adjust=False).mean().tolist()
     actual_future_data = build_actual_future_data(stock, prediction_labels)
@@ -267,6 +338,7 @@ def build_prediction_response(
     chart_data = {
         "labels": historical_labels + prediction_labels,
         "data": historical_data + [None] * len(prediction_labels),
+        "ohlc_data": ohlc_data,
         "ema_12_data": ema_12_data + [None] * len(prediction_labels),
         "ema_26_data": ema_26_data + [None] * len(prediction_labels),
         "actual_future_data": [None] * len(historical_data) + actual_future_data,
@@ -551,7 +623,7 @@ def index(
     request: Request,
     ticker: str,
     predict_len: Optional[str] = None,
-    period: Optional[str] = None,
+    interval: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ):
@@ -579,18 +651,18 @@ def index(
 
     (
         df,
-        selected_period,
+        selected_interval,
         selected_start_date,
         selected_end_date,
         is_custom_range,
         range_error,
-    ) = get_history_dataframe(stock, period, start_date, end_date)
+    ) = get_history_dataframe(stock, interval, start_date, end_date)
     if range_error:
         add_flash_message(request, range_error, "warning")
     if df.empty:
         add_flash_message(request, "指定した期間の株価データが見つかりませんでした。", "warning")
     predict_len_value = parse_predict_len(predict_len)
-    chart_data = build_chart_data(stock_ticker, current_price, df)
+    chart_data = sanitize_for_json(build_chart_data(stock_ticker, current_price, df))
 
     return templates.TemplateResponse(
         request=request,
@@ -608,11 +680,11 @@ def index(
             "company_name": company_name,
             "flash_messages": pop_flash_messages(request),
             "predict_len": predict_len_value,
-            "selected_period": selected_period,
+            "selected_interval": selected_interval,
             "selected_start_date": selected_start_date,
             "selected_end_date": selected_end_date,
             "is_custom_range": is_custom_range,
-            "history_periods": HISTORY_PERIODS,
+            "chart_intervals": CHART_INTERVALS,
         },
     )
 
@@ -659,7 +731,7 @@ def daytrade_prediction(
 def predict_stock(
     ticker: str,
     predict_len: Optional[str] = None,
-    period: Optional[str] = None,
+    interval: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ):
@@ -676,12 +748,12 @@ def predict_stock(
         predict_len_value = parse_predict_len(predict_len)
         (
             df,
-            _selected_period,
+            _selected_interval,
             _selected_start_date,
             _selected_end_date,
             _is_custom_range,
             range_error,
-        ) = get_history_dataframe(stock, period, start_date, end_date)
+        ) = get_history_dataframe(stock, interval, start_date, end_date)
         if range_error:
             return JSONResponse(status_code=400, content={"error": range_error})
         if df.empty:

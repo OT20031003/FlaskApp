@@ -3,6 +3,10 @@
 {% block title %}{{ company_name | default(chart_data_py.ticker) }} 株価チャート{% endblock %}
 
 {% block content %}
+<style>
+    .chart-container { position: relative; height: 560px; }
+    @media (max-width: 768px) { .chart-container { height: 430px; } }
+</style>
 <div class="row">
     <div class="col-md-8">
         
@@ -24,17 +28,18 @@
         {% endif %}
 
         <div class="d-flex flex-wrap gap-2 mb-3">
-            {% for period_value, period_label in history_periods.items() %}
+            {% for interval_value, interval_config in chart_intervals.items() %}
             <a
-                href="{{ request.url_for('index', ticker=chart_data_py.ticker) }}?period={{ period_value }}"
-                class="btn btn-sm {% if (not is_custom_range) and selected_period == period_value %}btn-primary{% else %}btn-outline-primary{% endif %}"
+                href="{{ request.url_for('index', ticker=chart_data_py.ticker) }}?interval={{ interval_value }}{% if selected_start_date %}&amp;start_date={{ selected_start_date }}{% endif %}{% if selected_end_date %}&amp;end_date={{ selected_end_date }}{% endif %}"
+                class="btn btn-sm {% if selected_interval == interval_value %}btn-primary{% else %}btn-outline-primary{% endif %}"
             >
-                {{ period_label }}
+                {{ interval_config.label }}
             </a>
             {% endfor %}
         </div>
 
         <form action="{{ request.url_for('index', ticker=chart_data_py.ticker) }}" method="get" class="row g-2 align-items-end mb-3">
+            <input type="hidden" name="interval" value="{{ selected_interval }}">
             <div class="col-sm-4">
                 <label for="start_date" class="form-label mb-1">開始日</label>
                 <input type="date" id="start_date" name="start_date" class="form-control" value="{{ selected_start_date or '' }}">
@@ -45,7 +50,7 @@
             </div>
             <div class="col-sm-4 d-flex gap-2">
                 <button type="submit" class="btn btn-primary">期間を適用</button>
-                <a href="{{ request.url_for('index', ticker=chart_data_py.ticker) }}?period=1y" class="btn btn-outline-secondary">リセット</a>
+                <a href="{{ request.url_for('index', ticker=chart_data_py.ticker) }}?interval=1d" class="btn btn-outline-secondary">リセット</a>
             </div>
         </form>
 
@@ -172,7 +177,7 @@
     let chartData = JSON.parse('{{ chart_data_json | safe }}');
     const predictionApiUrl = "{{ request.url_for('predict_stock', ticker=chart_data_py.ticker) }}";
     const directionApiUrl = "{{ request.url_for('predict_stock_direction', ticker=chart_data_py.ticker) }}";
-    const selectedPeriod = '{{ selected_period }}';
+    const selectedInterval = '{{ selected_interval }}';
     const selectedStartDate = '{{ selected_start_date or "" }}';
     const selectedEndDate = '{{ selected_end_date or "" }}';
     const pricePredictionForm = document.getElementById('pricePredictionForm');
@@ -194,6 +199,7 @@
     const directionTopFeaturesBody = document.getElementById('directionTopFeaturesBody');
 
     function appendHistoryParams(params) {
+        params.set('interval', selectedInterval);
         if (selectedStartDate || selectedEndDate) {
             if (selectedStartDate) {
                 params.set('start_date', selectedStartDate);
@@ -201,10 +207,7 @@
             if (selectedEndDate) {
                 params.set('end_date', selectedEndDate);
             }
-            return;
         }
-
-        params.set('period', selectedPeriod);
     }
 
     document.getElementById('searchForm').addEventListener('submit', function(e) {
@@ -215,87 +218,176 @@
         window.location.href = '/stock/' + ticker + '?' + params.toString();
     });
 
+    function getOhlcData(data) {
+        return Array.isArray(data.ohlc_data) ? data.ohlc_data : [];
+    }
+
+    function getCandlestickLabels(data) {
+        return getOhlcData(data).map(candle => candle.x);
+    }
+
+    function buildCandlestickRanges(data) {
+        return getOhlcData(data).map(candle => [candle.l, candle.h]);
+    }
+
+    function buildVolumeData(data) {
+        return getOhlcData(data).map(candle => candle.v || 0);
+    }
+
+    function buildVolumeColors(data) {
+        return getOhlcData(data).map(candle => (
+            candle.c >= candle.o
+                ? 'rgba(220, 53, 69, 0.45)'
+                : 'rgba(25, 135, 84, 0.45)'
+        ));
+    }
+
+    const candlestickRenderer = {
+        id: 'candlestickRenderer',
+        beforeDatasetsDraw(chart) {
+            if (!chart.isDatasetVisible(0)) {
+                return;
+            }
+
+            const candleDataset = chart.data.datasets[0];
+            const candleByDate = new Map(
+                candleDataset.ohlcData.map(candle => [candle.x, candle])
+            );
+            const {ctx, chartArea, scales: {x, y}} = chart;
+            const pointSpacing = chartArea.width / Math.max(chart.data.labels.length, 1);
+            const bodyWidth = Math.max(1, Math.min(10, pointSpacing * 0.7));
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(chartArea.left, y.top, chartArea.width, y.height);
+            ctx.clip();
+
+            chart.data.labels.forEach((label, index) => {
+                const candle = candleByDate.get(label);
+                if (!candle) {
+                    return;
+                }
+
+                const xPixel = x.getPixelForValue(index);
+                const highPixel = y.getPixelForValue(candle.h);
+                const lowPixel = y.getPixelForValue(candle.l);
+                const openPixel = y.getPixelForValue(candle.o);
+                const closePixel = y.getPixelForValue(candle.c);
+                const candleColor = candle.c >= candle.o
+                    ? 'rgb(220, 53, 69)'
+                    : 'rgb(25, 135, 84)';
+                const bodyTop = Math.min(openPixel, closePixel);
+                const bodyHeight = Math.max(1, Math.abs(closePixel - openPixel));
+
+                ctx.strokeStyle = candleColor;
+                ctx.fillStyle = candleColor;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(xPixel, highPixel);
+                ctx.lineTo(xPixel, lowPixel);
+                ctx.stroke();
+                ctx.fillRect(xPixel - bodyWidth / 2, bodyTop, bodyWidth, bodyHeight);
+            });
+
+            ctx.restore();
+        }
+    };
+
     const ctx = document.getElementById('stockChart').getContext('2d');
     const myChart = new Chart(ctx, {
-        type: 'line', 
+        type: 'bar',
         data: { 
-            labels: chartData.labels,
-            datasets: [ 
-                { 
-                    label: `${chartData.ticker} の終値（実績）`, 
-                    data: chartData.data, 
-                    borderColor: 'rgba(75, 192, 192, 1)', // 青緑
-                    borderWidth: 2, 
-                    fill: false, 
-                    tension: 0.1, 
-                    pointRadius: 1, 
-                    pointHitRadius: 10 
+            labels: getCandlestickLabels(chartData),
+            datasets: [
+                {
+                    type: 'bar',
+                    label: `${chartData.ticker} のローソク足`,
+                    data: buildCandlestickRanges(chartData),
+                    ohlcData: getOhlcData(chartData),
+                    backgroundColor: 'rgba(0, 0, 0, 0)',
+                    borderColor: 'rgba(0, 0, 0, 0)',
+                    borderWidth: 0,
+                    grouped: false,
+                    yAxisID: 'y'
                 },
                 {
-                    label: 'EMA 12',
-                    data: chartData.ema_12_data,
-                    borderColor: 'rgba(54, 162, 235, 1)',
-                    borderWidth: 2,
-                    fill: false,
-                    tension: 0.1,
-                    pointRadius: 0,
-                    pointHitRadius: 10
-                },
-                {
-                    label: 'EMA 26',
-                    data: chartData.ema_26_data,
-                    borderColor: 'rgba(153, 102, 255, 1)',
-                    borderWidth: 2,
-                    fill: false,
-                    tension: 0.1,
-                    pointRadius: 0,
-                    pointHitRadius: 10
-                },
-                {
-                    label: '実績（予測期間）',
-                    data: chartData.actual_future_data,
-                    borderColor: 'rgba(40, 167, 69, 1)',
-                    borderWidth: 2,
-                    fill: false,
-                    tension: 0.1,
-                    pointRadius: 1,
-                    pointHitRadius: 10,
-                    spanGaps: false
-                },
-                { 
-                    label: '予測 (リターンLSTM)',
-                    data: chartData.prediction_data_lstm, 
-                    borderColor: 'rgba(255, 99, 132, 1)', // 赤
-                    borderWidth: 2, 
-                    borderDash: [5, 5], // 破線
-                    fill: false, 
-                    tension: 0.1, 
-                    pointRadius: 1, 
-                    pointHitRadius: 10 
-                },
-                { 
-                    label: '予測 (Ridge)',
-                    data: chartData.prediction_data_ridge,
-                    borderColor: 'rgba(255, 159, 64, 1)', // オレンジ
-                    borderWidth: 2, 
-                    borderDash: [10, 5], // 別の破線
-                    fill: false, 
-                    tension: 0.1, 
-                    pointRadius: 1, 
-                    pointHitRadius: 10 
+                    type: 'bar',
+                    label: '出来高',
+                    data: buildVolumeData(chartData),
+                    backgroundColor: buildVolumeColors(chartData),
+                    borderWidth: 0,
+                    barPercentage: 0.75,
+                    categoryPercentage: 0.9,
+                    yAxisID: 'volume'
                 }
-            ] 
+            ]
         },
-        options: { 
-            scales: { 
-                y: { beginAtZero: false } 
+        options: {
+            maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false
+            },
+            scales: {
+                volume: {
+                    beginAtZero: true,
+                    position: 'left',
+                    stack: 'stockScales',
+                    stackWeight: 1,
+                    grid: {
+                        drawOnChartArea: false
+                    },
+                    title: {
+                        display: true,
+                        text: '出来高'
+                    },
+                    ticks: {
+                        maxTicksLimit: 3,
+                        callback(value) {
+                            return Intl.NumberFormat('ja-JP', {
+                                notation: 'compact',
+                                maximumFractionDigits: 1
+                            }).format(value);
+                        }
+                    }
+                },
+                y: {
+                    beginAtZero: false,
+                    position: 'left',
+                    stack: 'stockScales',
+                    stackWeight: 3
+                }
             },
             plugins: {
                 legend: {
-                    display: true
+                    display: false
+                },
+                tooltip: {
+                    callbacks: {
+                        label(context) {
+                            if (context.dataset.ohlcData) {
+                                const candle = context.dataset.ohlcData.find(
+                                    item => item.x === context.label
+                                );
+                                if (candle) {
+                                    return [
+                                        `始値: ${candle.o.toFixed(2)}`,
+                                        `高値: ${candle.h.toFixed(2)}`,
+                                        `安値: ${candle.l.toFixed(2)}`,
+                                        `終値: ${candle.c.toFixed(2)}`
+                                    ];
+                                }
+                            }
+                            if (context.dataset.yAxisID === 'volume') {
+                                return `出来高: ${Number(context.raw).toLocaleString('ja-JP')}`;
+                            }
+                            return `${context.dataset.label}: ${context.formattedValue}`;
+                        }
+                    }
                 }
             }
-        }
+        },
+        plugins: [candlestickRenderer]
     });
 
     function formatPredictionPrice(value) {
@@ -416,13 +508,11 @@
 
     function updatePredictionView(nextChartData, lstmPrice, ridgePrice) {
         chartData = nextChartData;
-        myChart.data.labels = chartData.labels;
-        myChart.data.datasets[0].data = chartData.data;
-        myChart.data.datasets[1].data = chartData.ema_12_data;
-        myChart.data.datasets[2].data = chartData.ema_26_data;
-        myChart.data.datasets[3].data = chartData.actual_future_data;
-        myChart.data.datasets[4].data = chartData.prediction_data_lstm;
-        myChart.data.datasets[5].data = chartData.prediction_data_ridge;
+        myChart.data.labels = getCandlestickLabels(chartData);
+        myChart.data.datasets[0].data = buildCandlestickRanges(chartData);
+        myChart.data.datasets[0].ohlcData = getOhlcData(chartData);
+        myChart.data.datasets[1].data = buildVolumeData(chartData);
+        myChart.data.datasets[1].backgroundColor = buildVolumeColors(chartData);
         myChart.update();
 
         predictedPriceLstm.textContent = formatPredictionPrice(lstmPrice);
